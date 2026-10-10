@@ -115,6 +115,19 @@ func problems() -> PackedStringArray:
 		for s in t.sends:
 			if s.target == t.id or (not seen.has(s.target) and s.target != MASTER_ID):
 				out.append("%s sends to %s, which it cannot" % [t.id, s.target])
+	for t in tracks + [master]:
+		for a in t.automation:
+			match DawKitAutomation.kind_of(a.target):
+				"":
+					out.append("%s automates %s, which is not a control" % [t.id, a.target])
+				"send":
+					var to: String = a.target.substr(5)
+					if not t.sends.any(func(sd): return sd.target == to and not sd.key):
+						out.append("%s automates a send to %s it does not have" % [t.id, to])
+				"fx":
+					var parts: PackedStringArray = a.target.split(":")
+					if int(parts[1]) >= t.effects.size():
+						out.append("%s automates effect %s, which it does not have" % [t.id, parts[1]])
 	return out
 
 

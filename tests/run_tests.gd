@@ -31,6 +31,8 @@ func _initialize() -> void:
 	_test_a_file_with_tempo_changes_opens_where_it_sounds()
 	_test_a_tempo_map_survives_the_file()
 	_test_the_click_follows_the_tempo_map()
+	_test_automation_is_read_along_the_song()
+	_test_automation_survives_the_file_without_our_extras()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -118,6 +120,13 @@ static func sample() -> DawKitProject:
 	loop.loop_end = 2.0
 	loop.source_offset = 0.5
 	kick.clips.append(loop)
+	# A ride on every kind of control.
+	kick.automation.append(DawKitAutomation.new("volume", [[0.0, -3.25, 1], [4.0, -12.0, 1], [8.0, 0.0, 0]]))
+	kick.automation.append(DawKitAutomation.new("pan", [[2.0, -0.5, 1], [6.0, 0.5, 0]]))
+	kick.automation.append(DawKitAutomation.new("mute", [[10.0, 1.0, 0], [11.0, 0.0, 0]]))
+	kick.automation.append(DawKitAutomation.new("fx:0:1", [[1.0, 0.25, 1], [3.0, 0.75, 1]]))
+	keys.automation.append(DawKitAutomation.new("send:" + verb.id, [[0.0, -24.0, 1], [16.0, -6.0, 0]]))
+	p.master.automation.append(DawKitAutomation.new("volume", [[170.0, -1.5, 1], [182.0, -60.0, 0]]))
 	return p
 
 
@@ -776,3 +785,38 @@ func _test_the_click_follows_the_tempo_map() -> void:
 	check("rendered, the first click starts on its sample (%d)" % first, first == int(round(0.25 * rate)))
 	var accent := int(round(0.75 * rate))
 	check("and the accent is the louder one", absi(wav.data.decode_s16(accent * 4)) > absi(wav.data.decode_s16(first * 4)))
+
+
+func _test_automation_is_read_along_the_song() -> void:
+	var a := DawKitAutomation.new("volume", [[2.0, -12.0, 1], [4.0, 0.0, 0], [6.0, -6.0, 1]])
+	close("before the first point, the first value holds", a.value_at(0.0), -12.0)
+	close("a straight line between linear points", a.value_at(3.0), -6.0)
+	close("a hold stays until the next point", a.value_at(5.99), 0.0)
+	close("after the last, the last holds", a.value_at(60.0), -6.0)
+	check("with no points, the control's own value", DawKitAutomation.new("pan").value_at(1.0, 0.3) == 0.3)
+	check("a target names a control, or nothing", DawKitAutomation.kind_of("fx:1:4") == "fx"
+			and DawKitAutomation.kind_of("send:t3") == "send" and DawKitAutomation.kind_of("fx:x") == "")
+	var p := sample()
+	p.track("t2").automation.append(DawKitAutomation.new("fx:9:0", [[0.0, 0.5, 0]]))
+	check("automating an effect that is not there is a problem", not p.problems().is_empty())
+
+
+func _test_automation_survives_the_file_without_our_extras() -> void:
+	var p := sample()
+	var file := _tmp("auto.dawproject")
+	DawKitDawproject.save(p, file, _media_root())
+	_without_extras(file, _tmp("auto_plain.dawproject"))
+	var back: DawKitProject = DawKitDawproject.open(_tmp("auto_plain.dawproject"), _tmp("auto_media"))["project"]
+	check("a file another DAW re-saved opens with its automation", back != null)
+	if back == null:
+		return
+	for t in p.tracks + [p.master]:
+		var other: DawKitTrack = back.track(t.id)
+		for a in t.automation:
+			var b := other.automation_of(a.target) if other != null else null
+			var same: bool = b != null and b.points.size() == a.points.size()
+			if same:
+				for i in a.points.size():
+					same = same and absf(b.points[i][0] - a.points[i][0]) < 0.0001 \
+							and absf(b.points[i][1] - a.points[i][1]) < 0.001 and int(b.points[i][2]) == int(a.points[i][2])
+			check("%s's %s is in the XML itself (%s)" % [t.name, a.target, b.points if b else null], same)

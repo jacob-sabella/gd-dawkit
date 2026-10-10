@@ -24,6 +24,8 @@ var monitor := Monitor.OFF
 var effects: Array[DawKitEffect] = []
 var sends: Array[DawKitSend] = []
 var clips: Array[DawKitClip] = []
+## Its automated controls, one lane per control (see DawKitAutomation).
+var automation: Array[DawKitAutomation] = []
 
 
 func _init(with_id := "", called := "") -> void:
@@ -36,7 +38,8 @@ func to_dict() -> Dictionary:
 			"volume_db": volume_db, "pan": pan, "mute": mute, "solo": solo, "armed": armed,
 			"monitor": monitor, "effects": effects.map(func(e): return e.to_dict()),
 			"sends": sends.map(func(s): return s.to_dict()),
-			"clips": clips.map(func(c): return c.to_dict())}
+			"clips": clips.map(func(c): return c.to_dict()),
+			"automation": automation.map(func(a): return a.to_dict())}
 
 
 static func from_dict(d: Dictionary) -> DawKitTrack:
@@ -55,4 +58,14 @@ static func from_dict(d: Dictionary) -> DawKitTrack:
 		t.sends.append(DawKitSend.from_dict(s))
 	for c in d.get("clips", []):
 		t.clips.append(DawKitClip.from_dict(c))
+	for a in d.get("automation", []):
+		t.automation.append(DawKitAutomation.from_dict(a))
 	return t
+
+
+## The lane for `target`, or null.
+func automation_of(target: String) -> DawKitAutomation:
+	for a in automation:
+		if a.target == target:
+			return a
+	return null

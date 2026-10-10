@@ -54,6 +54,14 @@ beat, tempo and whether the tempo holds or ramps in a straight line to the next 
 integrated exactly. A project keeps its map as `tempo_points` (empty for one tempo); clips and
 markers stay in seconds, so the map is for counting bars and for files that count in beats.
 
+## Automation
+
+A track's `automation` is a lane per control (`DawKitAutomation`): its fader in dB, its pan, its
+mute, a send's level (`send:<track id>`) or an effect's parameter (`fx:<effect>:<parameter>`),
+as points of seconds, value and shape (hold, or a straight line to the next point). In DAWproject
+each lane is `Points` in the track's lane, aimed at the parameter by the id its channel gives it,
+in that parameter's unit.
+
 ## DAWproject
 
 `DawKitDawproject.save(project, path, media_root)` writes a `.dawproject`, and
@@ -65,7 +73,7 @@ as it sounds.
 
 What another DAW reads from a dawkit file: tempo and its changes (`TempoAutomation`), time signature, tracks and folders, levels, pans,
 mutes, solos, sends, effects (dawkit's own as generic built-in devices with their parameters,
-third-party plug-ins with their saved state), clips with fades and file offsets, MIDI notes, and
+third-party plug-ins with their saved state), clips with fades and file offsets, MIDI notes, automation, and
 markers. What only dawkit reads back, from `dawkit/extras.json` in the same zip: the loop, the
 metronome, the project's length, clip gain, record arm, monitor mode, effect wet/dry and preset
 names, and sidechain keys (which DAWproject cannot express, so they are left out of the XML rather

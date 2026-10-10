@@ -65,7 +65,7 @@ static func _metadata(project: DawKitProject) -> DawKitXml:
 class _Writer:
 	var p: DawKitProject
 	var media_root: String
-	var extras := {"format": 1, "exact": {}, "tracks": {}, "effects": {}}
+	var extras := {"format": 1, "exact": {}, "tracks": {}, "effects": {}, "automation": {}}
 	var files := {}
 	var warnings := PackedStringArray()
 	var _next := 0
@@ -122,7 +122,7 @@ class _Writer:
 		if not audible.is_empty():
 			var sends := ch.add("Sends")
 			for s in audible:
-				var sid := _id()
+				var sid := "%s-send-%s" % [t.id, s.target]
 				var sx := sends.add("Send", {"destination": _channel(s.target),
 						"type": "pre" if s.pre_fader else "post", "id": sid})
 				sx.add("Enable", {"value": DawKitXml.flag(s.enabled), "id": sid + "-on"})
@@ -164,8 +164,13 @@ class _Writer:
 	func _arrangement(root: DawKitXml) -> void:
 		var arr := root.add("Arrangement", {"id": "arrangement"})
 		var lanes := arr.add("Lanes", {"timeUnit": "seconds", "id": "lanes"})
-		for t in p.tracks:
+		for t in p.tracks + [p.master]:
+			if t == p.master and t.automation.is_empty():
+				continue
 			var lane := lanes.add("Lanes", {"track": t.id, "id": t.id + "-lane"})
+			_automation(lane, t)
+			if t == p.master:
+				continue
 			var clips := lane.add("Clips", {"id": t.id + "-clips"})
 			var shapes: Array = []
 			for c in t.clips:
@@ -188,6 +193,48 @@ class _Writer:
 						"interpolation": "linear" if DawKitTempoMap.shape_of(pt[2]) != DawKitTempoMap.HOLD else "hold"})
 			# DAWproject has one kind of ramp; which kind each one is, is ours.
 			extras["tempo_points"] = p.tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])])
+
+	## A track's automation, a Points lane per control, aimed at the parameter it moves by the id
+	## the channel gave it, in that parameter's own unit.
+	func _automation(lane: DawKitXml, t: DawKitTrack) -> void:
+		for a in t.automation:
+			var kind := DawKitAutomation.kind_of(a.target)
+			var param := ""
+			var unit := "normalized"
+			match kind:
+				"volume":
+					param = t.id + "-vol"
+					unit = "linear"
+				"pan":
+					param = t.id + "-pan"
+				"mute":
+					param = t.id + "-mute"
+				"send":
+					param = "%s-send-%s" % [t.id, a.target.substr(5)]
+					unit = "linear"
+					param += "-vol"
+				"fx":
+					var parts := a.target.split(":")
+					param = "%s-fx%d-p%d" % [t.id, int(parts[1]), int(parts[2])]
+			if param.is_empty():
+				continue
+			var points := lane.add("Points", {"id": "%s-auto-%s" % [t.id, a.target.replace(":", "-")]})
+			if kind != "mute":
+				points.attrs["unit"] = unit
+			points.add("Target", {"parameter": param})
+			for pt in a.points:
+				var v: float = pt[1]
+				match kind:
+					"volume", "send":
+						v = db_to_linear(v)
+					"pan":
+						v = (v + 1.0) * 0.5
+				if kind == "mute":
+					points.add("BoolPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.flag(v >= 0.5)})
+				else:
+					points.add("RealPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.num(v),
+							"interpolation": "linear" if int(pt[2]) == DawKitAutomation.LINEAR else "hold"})
+			extras["automation"][param] = a.points.map(func(pt): return [float(pt[0]), float(pt[1]), int(pt[2])])
 
 	func _clip(clips: DawKitXml, t: DawKitTrack, c: DawKitClip) -> void:
 		var x := clips.add("Clip", {"time": DawKitXml.num(c.start), "duration": DawKitXml.num(c.length),
@@ -312,6 +359,8 @@ class _Reader:
 	var states: Array[Dictionary] = []
 	## Where beats fall, for times a file gives in beats.
 	var _map := DawKitTempoMap.new(120.0)
+	## Parameter id -> [track, target, the parameter's element], for automation to find what it moves.
+	var _params := {}
 	## Channel id -> track id, for sends and destinations.
 	var _channel_of := {}
 	var _destinations := {}
@@ -391,17 +440,27 @@ class _Reader:
 			t.solo = ch.get_bool("solo")
 			var mute := ch.first("Mute")
 			t.mute = mute != null and mute.get_bool("value")
+			_param(mute, t, "mute")
 			var pan := ch.first("Pan")
 			if pan != null:
 				t.pan = _pick(t.id + "-pan", _pan(pan))
+			_param(pan, t, "pan")
 			var vol := ch.first("Volume")
 			if vol != null:
 				t.volume_db = _pick(t.id + "-vol", _db(vol))
+			_param(vol, t, "volume")
 			var devices := ch.first("Devices")
 			if devices != null:
 				for dx in devices.children:
 					if dx.tag in DEVICE_TAGS:
-						t.effects.append(_effect(dx, "%s-fx%d" % [t.id, t.effects.size()]))
+						var e := _effect(dx, "%s-fx%d" % [t.id, t.effects.size()])
+						var params := dx.first("Parameters")
+						if params != null:
+							var n := 0
+							for px in params.children:
+								_param(px, t, "fx:%d:%d" % [t.effects.size(), int(px.get_float("parameterID", n))])
+								n += 1
+						t.effects.append(e)
 			var sends := ch.first("Sends")
 			if sends != null:
 				for sx in sends.all("Send"):
@@ -414,6 +473,8 @@ class _Reader:
 						s.pan = _pick(sid + "-pan", _pan(sx.first("Pan")))
 					if sx.first("Volume") != null:
 						s.volume_db = _pick(sid + "-vol", _db(sx.first("Volume")))
+						# Its target is a track not known until every channel is.
+						_param(sx.first("Volume"), t, "send:" + sx.get_attr("destination"))
 					pending_sends.append([t, sx.get_attr("destination"), s])
 		var tex: Dictionary = extras.get("tracks", {}).get(t.id, {})
 		t.armed = bool(tex.get("armed", false))
@@ -422,6 +483,61 @@ class _Reader:
 			t.sends.append(DawKitSend.from_dict(k))
 		for child in tx.all("Track"):
 			_track(child, t.id if not is_master else "", pending_sends)
+
+	func _param(px: DawKitXml, t: DawKitTrack, target: String) -> void:
+		if px != null and not px.get_attr("id").is_empty():
+			_params[px.get_attr("id")] = [t, target, px]
+
+	## A lane's Points: each aimed at a parameter this file gave an id, its values put into the
+	## model's units through what that parameter says its own are.
+	func _points(lane: DawKitXml, unit: String) -> void:
+		for px in lane.all("Points"):
+			var tgt := px.first("Target")
+			if tgt == null or not _params.has(tgt.get_attr("parameter")):
+				continue
+			var param_id := tgt.get_attr("parameter")
+			var entry: Array = _params[param_id]
+			var t: DawKitTrack = entry[0]
+			var target: String = entry[1]
+			if target.begins_with("send:"):
+				target = "send:" + str(_channel_of.get(target.substr(5), ""))
+			var kind := DawKitAutomation.kind_of(target)
+			if kind.is_empty() or target == "send:":
+				continue
+			var a := DawKitAutomation.new(target)
+			var time_unit := px.get_attr("timeUnit", unit)
+			for pt in px.children:
+				if not pt.tag.ends_with("Point"):
+					continue
+				var shape := DawKitAutomation.LINEAR if pt.get_attr("interpolation", "hold") == "linear" else DawKitAutomation.HOLD
+				var v := 0.0
+				if kind == "mute":
+					v = 1.0 if pt.get_bool("value") else 0.0
+					shape = DawKitAutomation.HOLD
+				else:
+					var as_param := DawKitXml.new("Point", (entry[2] as DawKitXml).attrs.duplicate())
+					as_param.attrs["value"] = pt.get_attr("value", "0")
+					if not px.get_attr("unit").is_empty():
+						as_param.attrs["unit"] = px.get_attr("unit")
+					match kind:
+						"volume", "send":
+							v = _db(as_param)
+						"pan":
+							v = _pan(as_param)
+						"fx":
+							v = _normalised(as_param)
+				a.add(_span(0.0, pt.get_float("time"), time_unit), DawKitAutomation.clamp_value(target, v), shape)
+			# The exact points, while the file still says the same thing.
+			var kept: Array = extras.get("automation", {}).get(param_id, [])
+			if kept.size() == a.points.size():
+				var agree := true
+				for i in kept.size():
+					agree = agree and absf(float(kept[i][0]) - a.points[i][0]) < AGREE \
+							and absf(float(kept[i][1]) - a.points[i][1]) < AGREE * maxf(1.0, absf(a.points[i][1]))
+				if agree:
+					a = DawKitAutomation.new(target, kept)
+			if not a.points.is_empty() and t.automation_of(target) == null:
+				t.automation.append(a)
 
 	func _effect(dx: DawKitXml, did: String) -> DawKitEffect:
 		var e := DawKitEffect.new()
@@ -508,7 +624,9 @@ class _Reader:
 		var top := arr.first("Lanes")
 		if top != null:
 			var unit := top.get_attr("timeUnit", "beats")
+			_points(top, unit)
 			for lane in top.all("Lanes"):
+				_points(lane, lane.get_attr("timeUnit", unit))
 				var t := _p.track(lane.get_attr("track"))
 				if t == null or t == _p.master:
 					continue
