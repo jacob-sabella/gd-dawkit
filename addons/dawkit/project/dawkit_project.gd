@@ -20,6 +20,9 @@ var tempo := 120.0
 var tempo_points: Array = []
 ## Beats per bar, and the note value of one beat.
 var time_signature := Vector2i(4, 4)
+## The time signature's changes, as DawKitMeter's points ([beat, numerator, denominator], the
+## first at beat 0 and at `time_signature`); empty for a song in one signature.
+var time_signature_points: Array = []
 ## Seconds: how far the timeline runs, which can be past the last clip.
 var length := 0.0
 var metronome := false
@@ -36,6 +39,13 @@ func tempo_map() -> DawKitTempoMap:
 	if tempo_points.is_empty():
 		return DawKitTempoMap.new(tempo)
 	return DawKitTempoMap.from_array(tempo_points)
+
+
+## Where every bar begins: `time_signature` held, or `time_signature_points` when there are any.
+func meter() -> DawKitMeter:
+	if time_signature_points.is_empty():
+		return DawKitMeter.new(time_signature.x, time_signature.y)
+	return DawKitMeter.from_array(time_signature_points, time_signature.x, time_signature.y)
 
 
 ## The track with this id, the master included, or null.
@@ -93,6 +103,15 @@ func problems() -> PackedStringArray:
 		last_beat = float(point[0])
 	if not tempo_points.is_empty() and (float(tempo_points[0][0]) != 0.0 or not is_equal_approx(float(tempo_points[0][1]), tempo)):
 		out.append("the tempo map does not start at the project's tempo")
+	last_beat = -1.0
+	for point in time_signature_points:
+		if not (point is Array) or point.size() < 3 or float(point[0]) <= last_beat or int(point[1]) < 1 or int(point[2]) < 1:
+			out.append("the time signature's changes are not each a later beat in a real signature (%s)" % [point])
+			break
+		last_beat = float(point[0])
+	if not time_signature_points.is_empty() and (float(time_signature_points[0][0]) != 0.0
+			or Vector2i(int(time_signature_points[0][1]), int(time_signature_points[0][2])) != time_signature):
+		out.append("the time signature's changes do not start at the project's signature")
 	var seen := {}
 	for t in tracks:
 		if t.id.is_empty() or t.id == MASTER_ID:
@@ -134,7 +153,9 @@ func problems() -> PackedStringArray:
 func to_dict() -> Dictionary:
 	return {"format_version": FORMAT_VERSION, "title": title, "tempo": tempo,
 			"tempo_points": tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])]),
-			"time_signature": [time_signature.x, time_signature.y], "length": length,
+			"time_signature": [time_signature.x, time_signature.y],
+			"time_signature_points": time_signature_points.map(func(pt): return [float(pt[0]), int(pt[1]), int(pt[2])]),
+			"length": length,
 			"metronome": metronome,
 			"loop": {"on": loop_on, "start": loop_start, "end": loop_end},
 			"markers": markers.map(func(m): return m.to_dict()),
@@ -150,6 +171,8 @@ static func from_dict(d: Dictionary) -> DawKitProject:
 		p.tempo_points.append([float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])])
 	var sig: Array = d.get("time_signature", [4, 4])
 	p.time_signature = Vector2i(int(sig[0]), int(sig[1]))
+	for pt in d.get("time_signature_points", []):
+		p.time_signature_points.append([float(pt[0]), int(pt[1]), int(pt[2])])
 	p.length = float(d.get("length", 0.0))
 	p.metronome = bool(d.get("metronome", false))
 	var loop: Dictionary = d.get("loop", {})

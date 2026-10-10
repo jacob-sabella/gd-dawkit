@@ -195,6 +195,12 @@ class _Writer:
 						"interpolation": "linear" if DawKitTempoMap.shape_of(pt[2]) != DawKitTempoMap.HOLD else "hold"})
 			# DAWproject has one kind of ramp; which kind each one is, is ours.
 			extras["tempo_points"] = p.tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])])
+		if not p.time_signature_points.is_empty():
+			var sigs := arr.add("TimeSignatureAutomation", {"timeUnit": "beats", "id": "timesig-map"})
+			sigs.add("Target", {"parameter": "timesig"})
+			for pt in p.time_signature_points:
+				sigs.add("TimeSignaturePoint", {"time": DawKitXml.num(pt[0]), "numerator": str(int(pt[1])),
+						"denominator": str(int(pt[2]))})
 
 	## A track's automation, a Points lane per control, aimed at the parameter it moves by the id
 	## the channel gave it, in that parameter's own unit.
@@ -420,6 +426,7 @@ class _Reader:
 		var arr := root.first("Arrangement")
 		if arr != null:
 			_tempo_map(arr)
+			_meter(arr)
 			_arrangement(arr)
 		var px: Dictionary = extras.get("project", {})
 		_p.loop_on = bool(px.get("loop_on", false))
@@ -622,6 +629,21 @@ class _Reader:
 		_map = m
 		_p.tempo = m.points[0][1]
 		_p.tempo_points = [] if m.is_constant() and not m.points[0][2] else m.to_array()
+
+	## The arrangement's time signature changes, after its tempo's (a point given in seconds is
+	## put into beats by the tempo map). The transport's signature holds until the first point.
+	func _meter(arr: DawKitXml) -> void:
+		var sx := arr.first("TimeSignatureAutomation")
+		if sx == null:
+			return
+		var unit := sx.get_attr("timeUnit", "beats")
+		var m := DawKitMeter.new(_p.time_signature.x, _p.time_signature.y)
+		for px in sx.all("TimeSignaturePoint"):
+			var at := px.get_float("time")
+			m.set_point(_map.beat_at(at) if unit == "seconds" else at, int(px.get_float("numerator", 4)),
+					int(px.get_float("denominator", 4)))
+		_p.time_signature = Vector2i(m.points[0][1], m.points[0][2])
+		_p.time_signature_points = [] if m.is_constant() else m.to_array()
 
 	## `v` in `unit`, measured on from `origin` seconds into the song, as seconds.
 	func _span(origin: float, v: float, unit: String) -> float:

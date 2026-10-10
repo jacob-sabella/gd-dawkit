@@ -57,24 +57,22 @@ static func bar(tempo: float, beats: int, rate := 48000) -> AudioStreamWAV:
 
 
 ## Where each click starts in `seconds` from `from` in a song with tempo changes, as
-## [seconds from `from`, accented] pairs: a click on every beat, the first of each bar accented.
-static func span_clicks(map: DawKitTempoMap, beats: int, from: float, seconds: float) -> Array:
+## [seconds from `from`, accented] pairs: a click on every count of the bar (DawKitMeter.counts:
+## each quarter in x/4, each eighth in x/8), the first of each bar accented. `meter` is a
+## DawKitMeter, or a number of quarter beats to the bar.
+static func span_clicks(map: DawKitTempoMap, meter, from: float, seconds: float) -> Array:
+	var m: DawKitMeter = meter if meter is DawKitMeter else DawKitMeter.new(maxi(int(meter), 1), 4)
 	var out: Array = []
-	var per_bar := maxi(beats, 1)
-	var b := int(ceil(map.beat_at(from) - 0.000001))
-	while true:
-		var at := map.seconds_at(b) - from
-		if at >= seconds:
-			break
-		if at >= 0.0:
-			out.append([at, posmod(b, per_bar) == 0])
-		b += 1
+	for c in m.counts(map.beat_at(from), map.beat_at(from + seconds)):
+		var at := maxf(map.seconds_at(float(c[0])) - from, 0.0)
+		if at < seconds:
+			out.append([at, c[1]])
 	return out
 
 
 ## `seconds` of clicks from `from` in a song with tempo changes, not looping: a window a player
 ## plays from, for a song a looping bar cannot keep time with.
-static func span(map: DawKitTempoMap, beats: int, from: float, seconds: float, rate := 48000) -> AudioStreamWAV:
+static func span(map: DawKitTempoMap, beats, from: float, seconds: float, rate := 48000) -> AudioStreamWAV:
 	var frames := int(round(seconds * rate))
 	var data := PackedByteArray()
 	data.resize(frames * 4)

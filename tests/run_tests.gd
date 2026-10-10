@@ -31,6 +31,8 @@ func _initialize() -> void:
 	_test_a_file_with_tempo_changes_opens_where_it_sounds()
 	_test_a_tempo_map_survives_the_file()
 	_test_the_click_follows_the_tempo_map()
+	_test_the_meter_counts_bars()
+	_test_time_signature_changes_survive_the_file()
 	_test_automation_is_read_along_the_song()
 	_test_automation_survives_the_file_without_our_extras()
 	_test_the_official_examples_open_and_come_back()
@@ -789,6 +791,61 @@ func _test_the_click_follows_the_tempo_map() -> void:
 	check("rendered, the first click starts on its sample (%d)" % first, first == int(round(0.25 * rate)))
 	var accent := int(round(0.75 * rate))
 	check("and the accent is the louder one", absi(wav.data.decode_s16(accent * 4)) > absi(wav.data.decode_s16(first * 4)))
+
+
+func _test_the_meter_counts_bars() -> void:
+	var m := DawKitMeter.new(4, 4)
+	check("one signature counts bars of four", m.bar_at(8.0) == 2.0 and m.position(9.5) == [3, 2, 0.5])
+	# 4/4 for two bars, 6/8 (three beats) from beat 8, 7/8 from beat 13 -- a bar and two
+	# thirds of 6/8 later, so the 6/8 bar it falls in is cut short.
+	m.set_point(8.0, 6, 8)
+	m.set_point(13.0, 7, 8)
+	check("a change starts bar 3 (%.3f)" % m.bar_at(8.0), m.bar_at(8.0) == 2.0)
+	check("6/8 bars are three beats (%.3f)" % m.bar_at(11.0), m.bar_at(11.0) == 3.0)
+	check("a change inside a bar cuts it short and starts the next (%.3f)" % m.bar_at(13.0), m.bar_at(13.0) == 4.0)
+	check("and bars go back to beats the same way (%s)" % [[m.beat_of_bar(2.0), m.beat_of_bar(3.0), m.beat_of_bar(4.0), m.beat_of_bar(5.0)]],
+			m.beat_of_bar(2.0) == 8.0 and m.beat_of_bar(3.0) == 11.0 and m.beat_of_bar(4.0) == 13.0 and m.beat_of_bar(5.0) == 16.5)
+	check("its signature there (%s)" % m.signature_at(13.5), m.signature_at(13.5) == Vector2i(7, 8) and m.signature_at(12.9) == Vector2i(6, 8))
+	check("counted in eighths in x/8 (%s)" % [m.position(9.5)], m.position(9.5) == [3, 4, 0.0])
+	check("before the song, bars of the first signature", m.bar_at(-4.0) == -1.0 and m.beat_of_bar(-1.0) == -4.0)
+	var counts := m.counts(7.0, 14.0)
+	check("a click on each count, the bar's first accented (%s)" % [counts], counts == [[7.0, false],
+			[8.0, true], [8.5, false], [9.0, false], [9.5, false], [10.0, false], [10.5, false],
+			[11.0, true], [11.5, false], [12.0, false], [12.5, false],
+			[13.0, true], [13.5, false]])
+	var back := DawKitMeter.from_array(m.to_array())
+	check("and its points are its own again", back.to_array() == m.to_array() and back.bar_at(13.0) == 4.0)
+	var map := DawKitTempoMap.new(120.0)
+	var clicks := DawKitMetronome.span_clicks(map, m, 4.0, 2.0)
+	check("the click counts the meter (%s)" % [clicks], clicks.map(func(c): return c[0]) == [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75]
+			and clicks.map(func(c): return c[1]) == [true, false, false, false, false, false, true, false])
+
+
+func _test_time_signature_changes_survive_the_file() -> void:
+	var p := sample()
+	p.time_signature_points = [[0.0, 6, 8], [6.0, 4, 4], [14.0, 7, 8]]
+	check("a project with signature changes is sound (%s)" % [p.problems()], p.problems().is_empty())
+	var file := _tmp("meter.dawproject")
+	DawKitDawproject.save(p, file, _media_root())
+	var back: DawKitProject = DawKitDawproject.open(file, _tmp("meter_media"))["project"]
+	check("saved and opened, it is the same project (%s)" % (p.first_difference(back) if back else "none"),
+			back != null and p.same_as(back))
+	_without_extras(file, _tmp("meter_plain.dawproject"))
+	var plain: DawKitProject = DawKitDawproject.open(_tmp("meter_plain.dawproject"), _tmp("meter_plain_media"))["project"]
+	check("the changes are in the XML itself, for any DAW (%s)" % [plain.time_signature_points if plain else null],
+			plain != null and plain.time_signature_points == p.time_signature_points)
+	if OS.execute("sh", ["-c", "command -v xmllint"]) == 0:
+		var zip := ZIPReader.new()
+		zip.open(file)
+		var xml_path := _tmp("meter_project.xml")
+		FileAccess.open(xml_path, FileAccess.WRITE).store_buffer(zip.read_file("project.xml"))
+		zip.close()
+		var said: Array = []
+		var rc := OS.execute("xmllint", ["--noout", "--schema",
+				ProjectSettings.globalize_path("res://tests/fixtures/dawproject/Project.xsd"), xml_path], said, true)
+		check("and valid against the official schema (%s)" % str(said).substr(0, 300), rc == 0)
+	p.time_signature_points = [[0.0, 3, 4]]
+	check("changes that do not start at the signature are a problem", not p.problems().is_empty())
 
 
 func _test_automation_is_read_along_the_song() -> void:
