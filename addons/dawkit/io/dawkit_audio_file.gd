@@ -2,7 +2,7 @@ class_name DawKitAudioFile
 extends RefCounted
 
 ## The audio files people bring to a project: WAV (8/16/24/32-bit integer, 32/64-bit float,
-## plain or WAVE_FORMAT_EXTENSIBLE), AIFF and AIFF-C, Ogg Vorbis and MP3.
+## plain or WAVE_FORMAT_EXTENSIBLE), AIFF and AIFF-C, FLAC (DawKitFlac), Ogg Vorbis and MP3.
 ##
 ## `read` gives the sound as samples, mono or stereo (more channels are folded down to two).
 ## `bring_in` puts a file where a project keeps its media, in a form the engine plays: a WAV the
@@ -10,7 +10,7 @@ extends RefCounted
 ## 32-bit float WAV, which loses nothing from a 24-bit or 32-bit source.
 ##
 ## Ogg and MP3 are decoded by Godot, which hands back the sound at the audio server's mix rate,
-## so that is the rate their WAV is written at. FLAC is not read yet.
+## so that is the rate their WAV is written at. FLAC is decoded here, at its own rate.
 
 const PEAKS_PER_SECOND := 50
 
@@ -31,12 +31,21 @@ static func read(path: String) -> Dictionary:
 	if magic == "FORM" and bytes.slice(8, 12).get_string_from_ascii() in ["AIFF", "AIFC"]:
 		return _read_aiff(bytes, path)
 	if magic == "fLaC":
-		return _fail("%s is FLAC, which cannot be read yet; save it as WAV" % path.get_file())
+		var flac := DawKitFlac.decode_ints(bytes)
+		if not str(flac["error"]).is_empty():
+			return _fail("%s: %s" % [path.get_file(), flac["error"]])
+		var ints: PackedInt64Array = flac["samples"]
+		var raw := PackedFloat32Array()
+		raw.resize(ints.size())
+		var scale := 1.0 / float(1 << (int(flac["bits"]) - 1))
+		for i in ints.size():
+			raw[i] = ints[i] * scale
+		return _samples(raw, flac["channels"], flac["rate"])
 	if magic == "OggS":
 		return _decode(AudioStreamOggVorbis.load_from_file(path), path)
 	if magic.begins_with("ID3") or (bytes.size() > 1 and bytes[0] == 0xFF and (bytes[1] & 0xE0) == 0xE0):
 		return _decode(AudioStreamMP3.load_from_file(path), path)
-	return _fail("%s is not a sound file this can read (WAV, AIFF, Ogg or MP3)" % path.get_file())
+	return _fail("%s is not a sound file this can read (WAV, AIFF, FLAC, Ogg or MP3)" % path.get_file())
 
 
 ## Puts `source` at `dest` as a file the engine plays. {"seconds", "peaks", "rate", "channels",

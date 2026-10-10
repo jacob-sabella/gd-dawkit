@@ -29,10 +29,13 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
 ## Audio files
 
 `DawKitAudioFile.read(path)` reads WAV (8/16/24/32-bit integer, 32/64-bit float, plain or
-extensible), AIFF and AIFF-C, Ogg Vorbis and MP3 into samples, folding more than two channels to
+extensible), AIFF and AIFF-C, FLAC, Ogg Vorbis and MP3 into samples, folding more than two channels to
 stereo. `bring_in(source, dest)` puts a file in a project's media: copied untouched when the engine
 plays it as it is, otherwise written as a 32-bit float WAV, with its length and a 50-per-second
-overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC is not read yet.
+overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC is decoded by
+`DawKitFlac`, written from RFC 9639: every subframe and residual kind, 4 to 32 bits, any channel
+count, checked against the file's own MD5. In GDScript it takes about 9 s for a 3-minute 24-bit
+stereo file; tests compare 11 files from the reference encoder to the WAVs they came from.
 
 ## Metronome
 

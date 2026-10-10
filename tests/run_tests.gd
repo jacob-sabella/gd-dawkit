@@ -23,6 +23,7 @@ func _initialize() -> void:
 	_test_more_channels_fold_to_stereo()
 	_test_a_file_is_brought_in_as_the_engine_plays_it()
 	_test_ogg_and_mp3_are_decoded()
+	_test_flac_decodes_to_its_last_bit()
 	_test_what_cannot_be_read_says_why()
 	_test_the_click_is_on_the_beat()
 	_test_the_instrument_plays_each_note_on_its_sample()
@@ -578,9 +579,44 @@ func _test_ogg_and_mp3_are_decoded() -> void:
 		close("%s is at half scale" % name, loudest, 0.5, 0.05)
 
 
+## Each fixture was encoded by the reference `flac` 1.5 from the WAV beside it -- a tone, a burst
+## of noise, silence and a square, so every subframe kind turns up -- at settings that reach the
+## format's corners: fixed predictors (-0), LPC to order 32 with exhaustive model search and every
+## stereo mode (-8 -e -p -m -l 32 --lax), 192-sample blocks, 8, 16, 24 and 32 bits, wasted bits
+## (a 24-bit file of 16-bit sound), and six channels.
+func _test_flac_decodes_to_its_last_bit() -> void:
+	var dir := "res://tests/fixtures/audio/flac/"
+	for spec in [["s16_stereo_8", "s16_stereo"], ["s16_stereo_0", "s16_stereo"], ["s16_stereo_lax", "s16_stereo"],
+			["s24_stereo_5", "s24_stereo"], ["s24_stereo_8", "s24_stereo"], ["s16_mono_0", "s16_mono"],
+			["s16_mono_192", "s16_mono"], ["s8_mono", "s8_mono"], ["s16_six", "s16_six"],
+			["s24_wasted", "s24_wasted"], ["s32_stereo", "s32_stereo"]]:
+		var got := DawKitAudioFile.read(ProjectSettings.globalize_path(dir + spec[0] + ".flac"))
+		var want := DawKitAudioFile.read(ProjectSettings.globalize_path(dir + spec[1] + ".wav"))
+		check("%s decodes (%s)" % [spec[0], got["error"]], got["error"] == "" and want["error"] == ""
+				and got["rate"] == want["rate"] and got["channels"] == want["channels"] and got["frames"] == want["frames"])
+		var worst := _worst(got["samples"], want["samples"])
+		check("to exactly the sound encoded (%s: off by %.9f)" % [spec[0], worst], worst == 0.0)
+
+	var whole := FileAccess.get_file_as_bytes(dir + "s16_stereo_8.flac")
+	var raw := DawKitFlac.decode_ints(whole)
+	var ints: PackedInt64Array = raw["samples"]
+	check("the integers come out as the file holds them (%d bits, %d)" % [raw["bits"], ints[1000 * 2]],
+			raw["bits"] == 16 and absi(ints[1000 * 2]) < 32768)
+	var bent := whole.duplicate()
+	bent[bent.size() / 2] ^= 0x10
+	var broken := DawKitAudioFile.read(_write("bent.flac", bent))
+	check("one bit changed is caught (%s)" % broken["error"], broken["error"] != "")
+	var cut := DawKitAudioFile.read(_write("cut.flac", whole.slice(0, whole.size() / 2)))
+	check("a file cut short says so (%s)" % cut["error"], str(cut["error"]).contains("short"))
+	var started := Time.get_ticks_msec()
+	DawKitAudioFile.read(ProjectSettings.globalize_path(dir + "s24_stereo_8.flac"))
+	var ms := Time.get_ticks_msec() - started
+	print("flac: 9000 frames of 24-bit stereo in %d ms" % ms)
+
+
 func _test_what_cannot_be_read_says_why() -> void:
 	var flac := _write("song.flac", "fLaC".to_ascii_buffer() + PackedByteArray([0, 0, 0, 0]))
-	check("FLAC says it cannot be read yet", str(DawKitAudioFile.read(flac)["error"]).contains("FLAC"))
+	check("a FLAC file with nothing in it says so", str(DawKitAudioFile.read(flac)["error"]).contains("FLAC"))
 	var text := _write("notes.txt", "hello there".to_ascii_buffer())
 	check("a file that is not sound says so", str(DawKitAudioFile.read(text)["error"]).contains("not a sound file"))
 	var adpcm := _wav(_tone(10, 1, 8000), 1, 8000, 16, false, false)
