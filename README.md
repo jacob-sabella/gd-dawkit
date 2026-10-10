@@ -11,7 +11,8 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
 
     addons/dawkit/          the engine: the only directory a host needs
       project/              the project model (DawKitProject and its parts)
-      io/                   DAWproject files (DawKitDawproject) and the XML they are made of
+      io/                   DAWproject files (DawKitDawproject) and the XML they are made of;
+                            audio files people bring (DawKitAudioFile)
     tests/                  the engine's own checks, run headless
     tools/test.sh           runs them
 
@@ -23,6 +24,14 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
   project captured, saved, loaded and captured again comes back identical.
 - **Every class is prefixed `DawKit`**, because Godot's class names are global and an addon
   shares them with its host.
+
+## Audio files
+
+`DawKitAudioFile.read(path)` reads WAV (8/16/24/32-bit integer, 32/64-bit float, plain or
+extensible), AIFF and AIFF-C, Ogg Vorbis and MP3 into samples, folding more than two channels to
+stereo. `bring_in(source, dest)` puts a file in a project's media: copied untouched when the engine
+plays it as it is, otherwise written as a 32-bit float WAV, with its length and a 50-per-second
+overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC is not read yet.
 
 ## DAWproject
 
