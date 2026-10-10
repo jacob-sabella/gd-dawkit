@@ -19,6 +19,34 @@ void DawKitLane::set_clips(const Array &given) {
 		auto had = sounds.find(id);
 		if (id >= 0 && had != sounds.end()) {
 			sound = had->second;
+		} else if (d.has("wav")) {
+			Ref<AudioStreamWAV> wav = d["wav"];
+			auto s = std::make_shared<Sound>();
+			if (wav.is_valid()) {
+				PackedByteArray data = wav->get_data();
+				int channels = wav->is_stereo() ? 2 : 1;
+				s->rate = std::max(wav->get_mix_rate(), 1);
+				const uint8_t *b = data.ptr();
+				int width = 0;
+				switch (wav->get_format()) {
+					case AudioStreamWAV::FORMAT_8_BITS: width = 1; break;
+					case AudioStreamWAV::FORMAT_16_BITS: width = 2; break;
+					default: width = 0; break;
+				}
+				if (width > 0) {
+					s->frames = data.size() / (width * channels);
+					s->samples.resize(s->frames * 2);
+					for (int64_t f = 0; f < s->frames; f++) {
+						for (int ch = 0; ch < 2; ch++) {
+							int64_t at = (f * channels + std::min(ch, channels - 1)) * width;
+							float v = width == 1 ? (int8_t)b[at] / 128.0f
+												 : (int16_t)(b[at] | (b[at + 1] << 8)) / 32768.0f;
+							s->samples[f * 2 + ch] = v;
+						}
+					}
+				}
+			}
+			sound = s;
 		} else {
 			PackedFloat32Array samples = d.get("samples", PackedFloat32Array());
 			int channels = std::max((int)d.get("channels", 2), 1);
@@ -76,6 +104,8 @@ void DawKitLane::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_transport"), &DawKitLane::get_transport);
 	ClassDB::bind_method(D_METHOD("set_clips", "clips"), &DawKitLane::set_clips);
 	ClassDB::bind_method(D_METHOD("clip_count"), &DawKitLane::clip_count);
+	ClassDB::bind_method(D_METHOD("set_held", "held"), &DawKitLane::set_held);
+	ClassDB::bind_method(D_METHOD("get_held"), &DawKitLane::get_held);
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "transport", PROPERTY_HINT_RESOURCE_TYPE, "DawKitTransport"),
 			"set_transport", "get_transport");
 }
@@ -101,9 +131,10 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 	}
 	std::shared_ptr<const DawKitLane::Clips> clips = lane->snapshot();
 	const double rate = t->get_rate();
+	const int64_t hold = lane->get_held() ? t->get_hold_frame() : -1;
 	for (int32_t i = 0; i < frames; i++) {
 		int64_t song = t->song_frame_at(block + i);
-		if (song < 0) {
+		if (song < 0 || song < hold) {
 			continue;
 		}
 		float l = 0.0f, r = 0.0f;
@@ -127,14 +158,16 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 			int64_t f1 = std::min(f0 + 1, s.frames - 1);
 			float gl = s.samples[f0 * 2] + (float)frac * (s.samples[f1 * 2] - s.samples[f0 * 2]);
 			float gr = s.samples[f0 * 2 + 1] + (float)frac * (s.samples[f1 * 2 + 1] - s.samples[f0 * 2 + 1]);
-			float g = c.gain;
+			// The lower of the two fades, as an item's level is: a short item's fades cross.
+			double through = 1.0;
 			if (c.fade_in > 0 && into < c.fade_in) {
-				g *= fade_gain((double)into / c.fade_in, c.fade_shape);
+				through = std::min(through, (double)into / c.fade_in);
 			}
 			int64_t left = c.length - into;
 			if (c.fade_out > 0 && left <= c.fade_out) {
-				g *= fade_gain((double)(left - 1) / c.fade_out, c.fade_shape);
+				through = std::min(through, (double)(left - 1) / c.fade_out);
 			}
+			float g = c.gain * (through < 1.0 ? fade_gain(through, c.fade_shape) : 1.0f);
 			l += gl * g;
 			r += gr * g;
 		}

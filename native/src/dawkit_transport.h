@@ -40,6 +40,10 @@ public:
 	int get_rate() const { return rate.load(); }
 	// A loop range in seconds: the song goes round it while `looping`. Both 0 for none.
 	void set_loop(double from, double to, bool on);
+	// Nothing but the lanes that are not held (the click) sounds before song second `seconds`:
+	// a count-in. Below 0 for none.
+	void set_hold(double seconds);
+	int64_t get_hold_frame() const { return hold.load(); }
 
 protected:
 	static void _bind_methods();
@@ -53,6 +57,7 @@ private:
 	std::atomic<int64_t> loop_from{ 0 };
 	std::atomic<int64_t> loop_to{ 0 };
 	std::atomic<bool> looping{ false };
+	std::atomic<int64_t> hold{ -1 };
 };
 
 } // namespace godot

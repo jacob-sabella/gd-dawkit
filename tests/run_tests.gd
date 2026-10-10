@@ -716,6 +716,40 @@ func _test_lanes_play_on_the_same_sample() -> void:
 	g.set_clips([{"id": 3, "start": 0.0, "length": 0.5}])
 	check("a sound given before is kept by its id, not sent again", g.clip_count() == 1)
 
+	# A 16-bit stream as Godot holds one, decoded here; and a count-in's hold, which the click
+	# (a lane not held) plays through.
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.stereo = true
+	wav.mix_rate = 48000
+	var pcm := PackedByteArray()
+	pcm.resize(48000 * 4)
+	for i in 48000:
+		pcm.encode_s16(i * 4, 16384)
+		pcm.encode_s16(i * 4 + 2, -8192)
+	wav.data = pcm
+	var song = lane.call([{"id": 4, "wav": wav, "start": 0.0, "length": 1.0}])
+	var clicks = lane.call([{"id": 5, "wav": wav, "start": 0.0, "length": 1.0}])
+	clicks.set_held(false)
+	var base_h: int = t.get_clock()
+	var ps = song.instantiate_playback()
+	var pk = clicks.instantiate_playback()
+	t.set_hold(0.5)
+	t.play_from(0.0, 0.0)
+	var s_out := PackedVector2Array()
+	var k_out := PackedVector2Array()
+	for k in 100:
+		s_out.append_array(ps.mix_audio(1.0, 480))
+		k_out.append_array(pk.mix_audio(1.0, 480))
+	var at2: int = t.get_anchor_clock() - base_h
+	close("a 16-bit stream plays as the values it holds (left)", s_out[at2 + 30000].x, 0.5, 0.0001)
+	close("and right", s_out[at2 + 30000].y, -0.25, 0.0001)
+	check("the song is held silent until the count-in's end (%f)" % s_out[at2 + 1000].x, s_out[at2 + 1000].x == 0.0
+			and s_out[at2 + 23999].x == 0.0 and s_out[at2 + 24000].x > 0.4)
+	check("while a lane not held plays through it", k_out[at2 + 1000].x > 0.4)
+	t.set_hold(-1.0)
+	t.stop()
+
 
 func _test_what_cannot_be_read_says_why() -> void:
 	var flac := _write("song.flac", "fLaC".to_ascii_buffer() + PackedByteArray([0, 0, 0, 0]))

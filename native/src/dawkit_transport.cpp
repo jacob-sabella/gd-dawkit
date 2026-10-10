@@ -74,7 +74,12 @@ void DawKitTransport::set_loop(double from, double to, bool on) {
 	looping.store(on);
 }
 
+void DawKitTransport::set_hold(double seconds) {
+	hold.store(seconds < 0.0 ? -1 : (int64_t)std::llround(seconds * rate.load()));
+}
+
 void DawKitTransport::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_hold", "seconds"), &DawKitTransport::set_hold);
 	ClassDB::bind_method(D_METHOD("play_from", "seconds", "lead"), &DawKitTransport::play_from);
 	ClassDB::bind_method(D_METHOD("stop"), &DawKitTransport::stop);
 	ClassDB::bind_method(D_METHOD("is_playing"), &DawKitTransport::is_playing);

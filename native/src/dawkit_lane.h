@@ -4,6 +4,7 @@
 
 #include <godot_cpp/classes/audio_stream.hpp>
 #include <godot_cpp/classes/audio_stream_playback.hpp>
+#include <godot_cpp/classes/audio_stream_wav.hpp>
 
 #include <memory>
 #include <unordered_map>
@@ -44,6 +45,9 @@ public:
 	// loop_start, loop_end}. A sound already given under the same id is not copied again.
 	void set_clips(const Array &clips);
 	int clip_count() const;
+	// Whether the transport's hold (a count-in) silences this lane. The click is not held.
+	void set_held(bool p_held) { held.store(p_held); }
+	bool get_held() const { return held.load(); }
 
 	std::shared_ptr<const Clips> snapshot() const { return std::atomic_load(&clips); }
 
@@ -57,6 +61,7 @@ protected:
 
 private:
 	Ref<DawKitTransport> transport;
+	std::atomic<bool> held{ true };
 	std::shared_ptr<const Clips> clips = std::make_shared<Clips>();
 	std::unordered_map<int64_t, std::shared_ptr<const Sound>> sounds;
 };
