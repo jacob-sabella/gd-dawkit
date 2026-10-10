@@ -14,6 +14,10 @@ const MASTER_ID := "master"
 
 var title := "Untitled"
 var tempo := 120.0
+## The tempo's changes, as DawKitTempoMap's points ([beat, bpm, ramps], the first at beat 0 and at
+## `tempo`); empty for a song at one tempo. Clips and markers are in seconds whatever this says:
+## the map is for counting bars and beats, and for a file that counts in them.
+var tempo_points: Array = []
 ## Beats per bar, and the note value of one beat.
 var time_signature := Vector2i(4, 4)
 ## Seconds: how far the timeline runs, which can be past the last clip.
@@ -25,6 +29,13 @@ var loop_end := 0.0
 var markers: Array[DawKitMarker] = []
 var master := DawKitTrack.new(MASTER_ID, "Master")
 var tracks: Array[DawKitTrack] = []
+
+
+## Where every beat falls: `tempo` held, or `tempo_points` when there are any.
+func tempo_map() -> DawKitTempoMap:
+	if tempo_points.is_empty():
+		return DawKitTempoMap.new(tempo)
+	return DawKitTempoMap.from_array(tempo_points)
 
 
 ## The track with this id, the master included, or null.
@@ -74,6 +85,14 @@ func output_of(t: DawKitTrack) -> DawKitTrack:
 ## unique. A file read from another program is checked with this before it is played.
 func problems() -> PackedStringArray:
 	var out := PackedStringArray()
+	var last_beat := -1.0
+	for point in tempo_points:
+		if not (point is Array) or point.size() < 3 or float(point[0]) <= last_beat or float(point[1]) <= 0.0:
+			out.append("the tempo map's points are not each a later beat at a real tempo (%s)" % [point])
+			break
+		last_beat = float(point[0])
+	if not tempo_points.is_empty() and (float(tempo_points[0][0]) != 0.0 or not is_equal_approx(float(tempo_points[0][1]), tempo)):
+		out.append("the tempo map does not start at the project's tempo")
 	var seen := {}
 	for t in tracks:
 		if t.id.is_empty() or t.id == MASTER_ID:
@@ -101,6 +120,7 @@ func problems() -> PackedStringArray:
 
 func to_dict() -> Dictionary:
 	return {"format_version": FORMAT_VERSION, "title": title, "tempo": tempo,
+			"tempo_points": tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), bool(pt[2])]),
 			"time_signature": [time_signature.x, time_signature.y], "length": length,
 			"metronome": metronome,
 			"loop": {"on": loop_on, "start": loop_start, "end": loop_end},
@@ -113,6 +133,8 @@ static func from_dict(d: Dictionary) -> DawKitProject:
 	var p := DawKitProject.new()
 	p.title = str(d.get("title", "Untitled"))
 	p.tempo = float(d.get("tempo", 120.0))
+	for pt in d.get("tempo_points", []):
+		p.tempo_points.append([float(pt[0]), float(pt[1]), bool(pt[2])])
 	var sig: Array = d.get("time_signature", [4, 4])
 	p.time_signature = Vector2i(int(sig[0]), int(sig[1]))
 	p.length = float(d.get("length", 0.0))

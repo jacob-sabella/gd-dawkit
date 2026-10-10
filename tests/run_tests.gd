@@ -27,6 +27,9 @@ func _initialize() -> void:
 	_test_the_click_is_on_the_beat()
 	_test_the_instrument_plays_each_note_on_its_sample()
 	_test_an_instrument_is_an_instrument_in_the_file()
+	_test_the_tempo_map_counts_beats_into_seconds()
+	_test_a_file_with_tempo_changes_opens_where_it_sounds()
+	_test_a_tempo_map_survives_the_file()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -650,3 +653,93 @@ func _test_an_instrument_is_an_instrument_in_the_file() -> void:
 	var keys := back.track("t3") if back != null else null
 	check("and read back as one, from the XML alone", keys != null and not keys.effects.is_empty()
 			and keys.effects[0].instrument and keys.effects[0].kind == "tine")
+
+
+func _test_the_tempo_map_counts_beats_into_seconds() -> void:
+	var m := DawKitTempoMap.new(120.0)
+	check("one tempo is constant", m.is_constant())
+	close("at 120, beat 4 is two seconds", m.seconds_at(4.0), 2.0)
+	m.set_point(4.0, 60.0)
+	close("held at 60 from beat 4, beat 6 is two seconds later", m.seconds_at(6.0), 4.0)
+	close("and back again", m.beat_at(4.0), 6.0)
+	close("before the change it is still 120", m.seconds_at(2.0), 1.0)
+	close("the tempo is read where it holds", m.bpm_at(5.0), 60.0)
+	var ramp := DawKitTempoMap.new(60.0)
+	ramp.points[0][2] = true
+	ramp.set_point(4.0, 120.0)
+	ramp._index()
+	close("a ramp's tempo is a straight line in beats", ramp.bpm_at(2.0), 90.0)
+	# 60 -> 120 bpm over 4 beats: k = 15 bpm a beat, so (60 / 15) ln 2 seconds.
+	close("and its seconds are the exact integral (%.6f)" % ramp.seconds_at(4.0), ramp.seconds_at(4.0), 4.0 * log(2.0), 0.000001)
+	close("past it the last tempo holds", ramp.seconds_at(6.0), 4.0 * log(2.0) + 1.0, 0.000001)
+	var round_trip := true
+	for b in [0.0, 0.5, 1.7, 3.99, 4.0, 9.25]:
+		round_trip = round_trip and absf(ramp.beat_at(ramp.seconds_at(b)) - b) < 0.000001
+	check("seconds and beats are each other's inverse, across the ramp", round_trip)
+	var back := DawKitTempoMap.from_array(ramp.to_array())
+	close("and the map survives its plain form", back.seconds_at(4.0), ramp.seconds_at(4.0), 0.0000001)
+
+
+## Bitwig's example, with the tempo halved at beat 4: the bass clip and its notes, given in beats,
+## have to land where they sound.
+func _test_a_file_with_tempo_changes_opens_where_it_sounds() -> void:
+	var xml := FileAccess.get_file_as_string("res://tests/fixtures/dawproject/bitwig_readme_example.xml")
+	for interpolation in ["hold", "linear"]:
+		var points := '<TempoAutomation unit="bpm" id="tx"><Target parameter="id0"/>' \
+				+ '<RealPoint time="0" value="149" interpolation="%s"/>' % interpolation \
+				+ '<RealPoint time="4" value="74.5" interpolation="hold"/></TempoAutomation>'
+		var changed := xml.replace("</Arrangement>", points + "</Arrangement>")
+		var file := _tmp("tempo_%s.dawproject" % interpolation)
+		var w := ZIPPacker.new()
+		w.open(file)
+		w.start_file("project.xml")
+		w.write_file(changed.to_utf8_buffer())
+		w.close_file()
+		w.close()
+		var p: DawKitProject = DawKitDawproject.open(file, _tmp("tempo_media"))["project"]
+		check("a file with a %s tempo change opens" % interpolation, p != null and p.tempo_points.size() == 2)
+		if p == null:
+			continue
+		var beat := 60.0 / 149.0
+		var bass := p.tracks[0].clips[0]
+		var notes := {}
+		for n in range(0, bass.notes.size(), DawKitClip.NOTE_WIDTH):
+			notes[[bass.notes[n + 2], snappedf(bass.notes[n], 0.0001)]] = bass.notes[n + 1]
+		var first_four := 4.0 * beat
+		if interpolation == "linear":
+			# 149 -> 74.5 over four beats: k = -18.625 bpm a beat.
+			first_four = 60.0 / -18.625 * log(0.5)
+		close("%s: the clip runs as long as it plays, 4 beats then 4 at half speed (%.4f)" % [interpolation, bass.length],
+				bass.length, first_four + 8.0 * beat, 0.00001)
+		var on := first_four + 2.0 * beat
+		check("%s: a note on beat 5 is a beat at the new tempo past the change (%.4f)" % [interpolation, on],
+				notes.has([65.0, snappedf(on, 0.0001)]))
+		check("%s: the last note, beats 6 to 8, lasts four of the old beats" % interpolation,
+				notes.has([53.0, snappedf(first_four + 4.0 * beat, 0.0001)])
+				and absf(notes[[53.0, snappedf(first_four + 4.0 * beat, 0.0001)]] - (first_four + 8.0 * beat)) < 0.00001)
+
+
+func _test_a_tempo_map_survives_the_file() -> void:
+	var p := sample()
+	p.tempo_points = [[0.0, p.tempo, false], [8.0, p.tempo * 0.75, true], [16.0, p.tempo * 1.5, false]]
+	check("a project with a tempo map is sound (%s)" % [p.problems()], p.problems().is_empty())
+	var file := _tmp("tempo_map.dawproject")
+	DawKitDawproject.save(p, file, _media_root())
+	var back: DawKitProject = DawKitDawproject.open(file, _tmp("tempo_map_media"))["project"]
+	check("saved and opened, it is the same project (%s)" % (p.first_difference(back) if back else "none"),
+			back != null and p.same_as(back))
+	_without_extras(file, _tmp("tempo_plain.dawproject"))
+	var plain: DawKitProject = DawKitDawproject.open(_tmp("tempo_plain.dawproject"), _tmp("tempo_plain_media"))["project"]
+	check("the map is in the XML itself, for any DAW", plain != null and plain.tempo_points == p.tempo_points)
+	if OS.execute("sh", ["-c", "command -v xmllint"]) == 0:
+		var zip := ZIPReader.new()
+		zip.open(file)
+		var xml_path := _tmp("tempo_project.xml")
+		FileAccess.open(xml_path, FileAccess.WRITE).store_buffer(zip.read_file("project.xml"))
+		zip.close()
+		var said: Array = []
+		var rc := OS.execute("xmllint", ["--noout", "--schema",
+				ProjectSettings.globalize_path("res://tests/fixtures/dawproject/Project.xsd"), xml_path], said, true)
+		check("and valid against the official schema (%s)" % str(said).substr(0, 300), rc == 0)
+	p.tempo_points = [[0.0, 90.0, false]]
+	check("a map that does not start at the tempo is a problem", not p.problems().is_empty())

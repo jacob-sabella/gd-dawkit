@@ -180,6 +180,12 @@ class _Writer:
 				if m.colour.a > 0.0:
 					mx.attrs["color"] = "#" + m.colour.to_html(false)
 			extras["markers"] = p.markers.map(func(m): return m.to_dict())
+		if not p.tempo_points.is_empty():
+			var tempo := arr.add("TempoAutomation", {"timeUnit": "beats", "unit": "bpm", "id": "tempo-map"})
+			tempo.add("Target", {"parameter": "tempo"})
+			for pt in p.tempo_points:
+				tempo.add("RealPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.num(pt[1]),
+						"interpolation": "linear" if pt[2] else "hold"})
 
 	func _clip(clips: DawKitXml, t: DawKitTrack, c: DawKitClip) -> void:
 		var x := clips.add("Clip", {"time": DawKitXml.num(c.start), "duration": DawKitXml.num(c.length),
@@ -302,7 +308,8 @@ class _Reader:
 	var warnings := PackedStringArray()
 	var wanted_files: Array[String] = []
 	var states: Array[Dictionary] = []
-	var tempo := 120.0
+	## Where beats fall, for times a file gives in beats.
+	var _map := DawKitTempoMap.new(120.0)
 	## Channel id -> track id, for sends and destinations.
 	var _channel_of := {}
 	var _destinations := {}
@@ -323,7 +330,7 @@ class _Reader:
 			var sig := transport.first("TimeSignature")
 			if sig != null:
 				_p.time_signature = Vector2i(int(sig.get_float("numerator", 4)), int(sig.get_float("denominator", 4)))
-		tempo = _p.tempo
+		_map = DawKitTempoMap.new(_p.tempo)
 		var structure := root.first("Structure")
 		var pending_sends: Array = []
 		if structure != null:
@@ -347,6 +354,7 @@ class _Reader:
 						% [t.name, _p.track(dest).name if _p.track(dest) != null else dest])
 		var arr := root.first("Arrangement")
 		if arr != null:
+			_tempo_map(arr)
 			_arrangement(arr)
 		var px: Dictionary = extras.get("project", {})
 		_p.loop_on = bool(px.get("loop_on", false))
@@ -449,6 +457,41 @@ class _Reader:
 			e.plugin_format = str(ex["format"])
 		return e
 
+	## The arrangement's tempo changes, before anything in it is put into seconds. Points given in
+	## seconds are placed in order, each by the map the points before it make.
+	func _tempo_map(arr: DawKitXml) -> void:
+		var tx := arr.first("TempoAutomation")
+		if tx == null:
+			return
+		var unit := tx.get_attr("timeUnit", "beats")
+		var m := DawKitTempoMap.new(_p.tempo)
+		var first := true
+		for px in tx.all(["RealPoint", "Point"]):
+			var at := px.get_float("time")
+			var beat := m.beat_at(at) if unit == "seconds" else at
+			var bpm := px.get_float("value", _p.tempo)
+			var ramps := px.get_attr("interpolation", "hold") == "linear"
+			if first and beat > 0.0:
+				# The transport's tempo holds until the first point.
+				m.set_point(0.0, _p.tempo, false)
+			m.set_point(beat, bpm, ramps)
+			first = false
+		_map = m
+		_p.tempo = m.points[0][1]
+		_p.tempo_points = [] if m.is_constant() and not m.points[0][2] else m.to_array()
+
+	## `v` in `unit`, measured on from `origin` seconds into the song, as seconds.
+	func _span(origin: float, v: float, unit: String) -> float:
+		if unit != "beats":
+			return v
+		return _map.seconds_at(_map.beat_at(origin) + v) - origin
+
+	## `v` in `unit`, measured back from `end` seconds into the song, as seconds.
+	func _back(end: float, v: float, unit: String) -> float:
+		if unit != "beats":
+			return v
+		return end - _map.seconds_at(_map.beat_at(end) - v)
+
 	func _arrangement(arr: DawKitXml) -> void:
 		var top := arr.first("Lanes")
 		if top != null:
@@ -483,7 +526,7 @@ class _Reader:
 			var unit := mx.get_attr("timeUnit", top.get_attr("timeUnit", "beats") if top != null else "beats")
 			var i := 0
 			for m in mx.all("Marker"):
-				var marker := DawKitMarker.new(_seconds(m.get_float("time"), unit), m.get_attr("name"))
+				var marker := DawKitMarker.new(_span(0.0, m.get_float("time"), unit), m.get_attr("name"))
 				if not m.get_attr("color").is_empty():
 					marker.colour = Color.from_string(m.get_attr("color"), Color(0, 0, 0, 0))
 				if i < exact_markers.size():
@@ -494,27 +537,32 @@ class _Reader:
 				i += 1
 
 	## A clip, and any clips inside it (Bitwig nests an audio clip's events in a clip of their
-	## own), flattened onto the track. `offset` is where the containing clip starts, in seconds.
+	## own), flattened onto the track. `offset` is where the containing clip's content starts, in
+	## seconds. Every time in beats is put into seconds through the tempo map from where it is
+	## measured from, so a clip across a tempo change is as long as it sounds.
 	func _clip(t: DawKitTrack, cx: DawKitXml, unit: String, offset: float) -> void:
 		var c := DawKitClip.new()
-		c.start = offset + _seconds(cx.get_float("time"), unit)
-		c.length = _seconds(cx.get_float("duration"), unit)
+		c.start = offset + _span(offset, cx.get_float("time"), unit)
+		c.length = _span(c.start, cx.get_float("duration"), unit)
 		c.name = cx.get_attr("name")
 		c.muted = not cx.get_bool("enable", true)
 		var content_unit := cx.get_attr("contentTimeUnit", unit)
-		c.source_offset = _seconds(cx.get_float("playStart"), content_unit)
+		c.source_offset = _back(c.start, cx.get_float("playStart"), content_unit)
+		# Where the clip's own time 0 is in the song: its start, less how far into its content it
+		# starts playing.
+		var origin := c.start - c.source_offset
 		if cx.attrs.has("loopStart") and cx.attrs.has("loopEnd"):
-			c.loop_start = _seconds(cx.get_float("loopStart"), content_unit)
-			c.loop_end = _seconds(cx.get_float("loopEnd"), content_unit)
+			c.loop_start = _span(origin, cx.get_float("loopStart"), content_unit)
+			c.loop_end = _span(origin, cx.get_float("loopEnd"), content_unit)
 		var fade_unit := cx.get_attr("fadeTimeUnit", unit)
-		c.fade_in = _seconds(cx.get_float("fadeInTime"), fade_unit)
-		c.fade_out = _seconds(cx.get_float("fadeOutTime"), fade_unit)
+		c.fade_in = _span(c.start, cx.get_float("fadeInTime"), fade_unit)
+		c.fade_out = _back(c.end(), cx.get_float("fadeOutTime"), fade_unit)
 		if not cx.get_attr("color").is_empty():
 			c.colour = Color.from_string(cx.get_attr("color"), Color(0, 0, 0, 0))
 		var inner := cx.first("Clips")
 		if inner != null:
 			for ix in inner.all("Clip"):
-				_clip(t, ix, inner.get_attr("timeUnit", content_unit), c.start)
+				_clip(t, ix, inner.get_attr("timeUnit", content_unit), origin)
 			return
 		var notes := cx.first("Notes")
 		var audio := cx.first("Audio")
@@ -525,8 +573,10 @@ class _Reader:
 			var note_unit := notes.get_attr("timeUnit", content_unit)
 			var flat := PackedFloat64Array()
 			for n in notes.all("Note"):
-				var on := _seconds(n.get_float("time"), note_unit)
-				flat.append_array([on, on + _seconds(n.get_float("duration"), note_unit),
+				var on := _span(origin, n.get_float("time"), note_unit)
+				var off := _span(origin, n.get_float("time") + n.get_float("duration"), note_unit) if note_unit == "beats" \
+						else on + n.get_float("duration")
+				flat.append_array([on, off,
 						n.get_float("key"), roundf(clampf(n.get_float("vel", 0.8), 0.0, 1.0) * 127.0),
 						n.get_float("channel")])
 			c.notes = flat
@@ -535,9 +585,6 @@ class _Reader:
 			if not audio.first("File").get_bool("external") and not c.source in wanted_files:
 				wanted_files.append(c.source)
 		t.clips.append(c)
-
-	func _seconds(v: float, unit: String) -> float:
-		return v * 60.0 / maxf(tempo, 1.0) if unit == "beats" else v
 
 	func _pan(px: DawKitXml) -> float:
 		var v := px.get_float("value", 0.5)

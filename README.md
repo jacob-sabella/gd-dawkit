@@ -47,14 +47,23 @@ Played live a note at a time, or a whole clip at once with `render_notes(notes, 
 where each note starts on its own sample. In a project it is an effect of kind `"tine"` with
 `instrument` set, written to DAWproject as a `BuiltinDevice` with `deviceRole="instrument"`.
 
+## Tempo map
+
+`DawKitTempoMap` puts beats into seconds and back for a song whose tempo changes: points of
+beat, tempo and whether the tempo holds or ramps in a straight line to the next point. Ramps are
+integrated exactly. A project keeps its map as `tempo_points` (empty for one tempo); clips and
+markers stay in seconds, so the map is for counting bars and for files that count in beats.
+
 ## DAWproject
 
 `DawKitDawproject.save(project, path, media_root)` writes a `.dawproject`, and
 `DawKitDawproject.open(path, media_dir)` reads one, from dawkit or from another DAW. Output is
 checked against the official schema in the tests (`tests/fixtures/dawproject`, MIT, from
-github.com/bitwig/dawproject).
+github.com/bitwig/dawproject). Times another DAW gives in beats are put into seconds through the
+file's tempo map, each measured from where it starts, so a clip across a tempo change is as long
+as it sounds.
 
-What another DAW reads from a dawkit file: tempo, time signature, tracks and folders, levels, pans,
+What another DAW reads from a dawkit file: tempo and its changes (`TempoAutomation`), time signature, tracks and folders, levels, pans,
 mutes, solos, sends, effects (dawkit's own as generic built-in devices with their parameters,
 third-party plug-ins with their saved state), clips with fades and file offsets, MIDI notes, and
 markers. What only dawkit reads back, from `dawkit/extras.json` in the same zip: the loop, the
