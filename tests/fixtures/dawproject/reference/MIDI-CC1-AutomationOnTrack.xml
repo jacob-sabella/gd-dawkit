@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Project version="1.0">
+    <Application name="Test" version="1.0"/>
+    <Transport>
+        <Tempo unit="bpm" value="123.000000" id="id9"/>
+    </Transport>
+    <Structure>
+        <Track contentType="" id="id0" name="Master">
+            <Channel audioChannels="2" role="master" id="id1">
+                <Pan unit="normalized" value="0.500000" id="id3"/>
+                <Volume unit="linear" value="1.000000" id="id2"/>
+            </Channel>
+        </Track>
+        <Track contentType="notes" id="id4" name="Notes">
+            <Channel audioChannels="2" destination="id1" role="regular" id="id5">
+                <Pan unit="normalized" value="0.500000" id="id7"/>
+                <Volume unit="linear" value="1.000000" id="id6"/>
+            </Channel>
+        </Track>
+    </Structure>
+    <Arrangement id="id8">
+        <Lanes timeUnit="beats" id="id10">
+            <Points unit="normalized" track="id4" id="id11">
+                <Target expression="channelController" channel="0" controller="1"/>
+                <RealPoint value="0.000000" interpolation="linear" time="0.000000"/>
+                <RealPoint value="0.000000" interpolation="linear" time="1.000000"/>
+                <RealPoint value="0.500000" interpolation="linear" time="2.000000"/>
+                <RealPoint value="0.500000" interpolation="linear" time="3.000000"/>
+                <RealPoint value="1.000000" interpolation="linear" time="4.000000"/>
+                <RealPoint value="1.000000" interpolation="linear" time="5.000000"/>
+                <RealPoint value="0.500000" interpolation="linear" time="6.000000"/>
+                <RealPoint value="1.000000" interpolation="hold" time="7.000000"/>
+                <RealPoint value="0.500000" interpolation="hold" time="8.000000"/>
+            </Points>
+        </Lanes>
+    </Arrangement>
+    <Scenes/>
+</Project>

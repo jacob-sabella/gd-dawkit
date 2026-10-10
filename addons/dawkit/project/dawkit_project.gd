@@ -203,4 +203,7 @@ static func _diff(a, b, path: String) -> String:
 			if d != "":
 				return d
 		return ""
+	# A number written to a file in beats and read back in seconds may differ in its last bits.
+	if a is float and absf(a - b) <= 1e-9 * maxf(1.0, absf(a)):
+		return ""
 	return "" if a == b else "%s: %s vs %s" % [path, a, b]

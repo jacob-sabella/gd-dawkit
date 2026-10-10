@@ -29,7 +29,7 @@ var instrument := false
 func to_dict() -> Dictionary:
 	return {"kind": kind, "name": name, "enabled": enabled, "wet": wet, "preset": preset,
 			"values": Array(values), "names": Array(names),
-			"state": Marshalls.raw_to_base64(state), "plugin_format": plugin_format,
+			"state": Marshalls.raw_to_base64(state) if not state.is_empty() else "", "plugin_format": plugin_format,
 			"plugin_id": plugin_id, "instrument": instrument}
 
 

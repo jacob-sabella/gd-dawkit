@@ -23,6 +23,8 @@ const EXTRAS := "dawkit/extras.json"
 const BUILTIN_PREFIX := "dawkit:"
 ## How close an exact value has to be to the file's own for the file to still mean it.
 const AGREE := 0.0001
+## How far from the file's own speed a warp may play it before it is said to be stretched.
+const WARP_TOLERANCE := 0.01
 
 const PLUGIN_TAGS := {"VST3": "Vst3Plugin", "VST2": "Vst2Plugin", "CLAP": "ClapPlugin", "AU": "AuPlugin"}
 const PLUGIN_EXT := {"VST3": "vstpreset", "VST2": "fxp", "CLAP": "clap-preset", "AU": "aupreset"}
@@ -343,6 +345,16 @@ static func open(path: String, media_dir := "") -> Dictionary:
 	for e in r.states:
 		if e["path"] in names:
 			(e["effect"] as DawKitEffect).state = zip.read_file(e["path"])
+		else:
+			r.warnings.append("the state of %s is not in the file; it opens as it starts" % (e["effect"] as DawKitEffect).name)
+	# A file outside the project, by its path from where the project file is. One not on this
+	# machine is said; one that is is played from where it is.
+	for c in r.external_files:
+		var where := c.source if c.source.is_absolute_path() else path.get_base_dir().path_join(c.source).simplify_path()
+		if FileAccess.file_exists(where):
+			c.source = where
+		else:
+			r.warnings.append("%s, which a clip plays from outside the project, is not on this machine" % c.source.get_file())
 	zip.close()
 	var problems := project.problems()
 	if not problems.is_empty():
@@ -356,6 +368,8 @@ class _Reader:
 	var exact: Dictionary
 	var warnings := PackedStringArray()
 	var wanted_files: Array[String] = []
+	## Clips playing a file outside the project, by its path as the file gives it.
+	var external_files: Array[DawKitClip] = []
 	var states: Array[Dictionary] = []
 	## Where beats fall, for times a file gives in beats.
 	var _map := DawKitTempoMap.new(120.0)
@@ -621,35 +635,27 @@ class _Reader:
 		return end - _map.seconds_at(_map.beat_at(end) - v)
 
 	func _arrangement(arr: DawKitXml) -> void:
+		_index(root)
 		var top := arr.first("Lanes")
 		if top != null:
-			var unit := top.get_attr("timeUnit", "beats")
-			_points(top, unit)
-			for lane in top.all("Lanes"):
-				_points(lane, lane.get_attr("timeUnit", unit))
-				var t := _p.track(lane.get_attr("track"))
-				if t == null or t == _p.master:
-					continue
-				for clips in lane.all("Clips"):
-					var lane_unit := clips.get_attr("timeUnit", lane.get_attr("timeUnit", unit))
-					for cx in clips.all("Clip"):
-						_clip(t, cx, lane_unit, 0.0)
-				var shapes: Array = extras.get("tracks", {}).get(t.id, {}).get("clips", [])
-				for i in mini(shapes.size(), t.clips.size()):
-					var c := t.clips[i]
-					var sh: Dictionary = shapes[i]
-					# Only for the clip it was written for: a re-saved file with clips moved or
-					# added says nothing here about any of them.
-					if absf(float(sh.get("start", -1)) - c.start) < AGREE and absf(float(sh.get("length", -1)) - c.length) < AGREE:
-						c.gain_db = float(sh.get("gain_db", 0.0))
-						var col: Array = sh.get("colour", [])
-						if col.size() == 4 and (c.colour.a == 0.0 or _close_colour(c.colour, col)):
-							c.colour = Color(col[0], col[1], col[2], col[3])
-						# A note's end is written as its start plus a duration, which is not
-						# always the same number again; the exact notes stand in while they agree.
-						var exact_notes: Array = sh.get("notes", [])
-						if exact_notes.size() == c.notes.size() and _close_notes(c.notes, exact_notes):
-							c.notes = PackedFloat64Array(exact_notes)
+			_lanes(top, top.get_attr("track"), top.get_attr("timeUnit", "beats"))
+		for t in _p.tracks:
+			var shapes: Array = extras.get("tracks", {}).get(t.id, {}).get("clips", [])
+			for i in mini(shapes.size(), t.clips.size()):
+				var c := t.clips[i]
+				var sh: Dictionary = shapes[i]
+				# Only for the clip it was written for: a re-saved file with clips moved or
+				# added says nothing here about any of them.
+				if absf(float(sh.get("start", -1)) - c.start) < AGREE and absf(float(sh.get("length", -1)) - c.length) < AGREE:
+					c.gain_db = float(sh.get("gain_db", 0.0))
+					var col: Array = sh.get("colour", [])
+					if col.size() == 4 and (c.colour.a == 0.0 or _close_colour(c.colour, col)):
+						c.colour = Color(col[0], col[1], col[2], col[3])
+					# A note's end is written as its start plus a duration, which is not
+					# always the same number again; the exact notes stand in while they agree.
+					var exact_notes: Array = sh.get("notes", [])
+					if exact_notes.size() == c.notes.size() and _close_notes(c.notes, exact_notes):
+						c.notes = PackedFloat64Array(exact_notes)
 		var mx := arr.first("Markers")
 		if mx != null:
 			var exact_markers: Array = extras.get("markers", [])
@@ -665,6 +671,61 @@ class _Reader:
 						marker = ex
 				_p.markers.append(marker)
 				i += 1
+		var scenes := root.first("Scenes")
+		if scenes != null and not scenes.children.is_empty():
+			warnings.append("its %d scene(s) were left out: scenes and clip launchers are not kept" % scenes.all("Scene").size())
+
+	## Every element by its id: a clip may play another's content by `reference`.
+	var _by_id := {}
+
+	func _index(x: DawKitXml) -> void:
+		if x.attrs.has("id"):
+			_by_id[x.get_attr("id")] = x
+		for c in x.children:
+			_index(c)
+
+	## A lane and everything in it. The format nests lanes as deep as it likes, and any of them,
+	## or a Clips or Points in them, may say whose track it is; what it does not say it has from
+	## the lane around it. Bitwig nests a lane per track; others put `Clips track=` straight
+	## under the arrangement's lanes.
+	func _lanes(lane: DawKitXml, track_id: String, unit: String) -> void:
+		for x in lane.children:
+			var tid := x.get_attr("track", track_id)
+			var u := x.get_attr("timeUnit", unit)
+			match x.tag:
+				"Lanes":
+					_lanes(x, tid, u)
+				"Clips":
+					var t := _p.track(tid)
+					if t == null or t == _p.master:
+						if not x.all("Clip").is_empty():
+							warnings.append("%d clip(s) on %s were left out: clips play on a track, not there"
+									% [x.all("Clip").size(), "the master" if t == _p.master else "no track"])
+						continue
+					for cx in x.all("Clip"):
+						_clip(t, cx, u, 0.0)
+				"Points":
+					_point_lane(x, u, tid)
+				"Markers":
+					pass
+				"Notes", "Audio", "Warps", "Video":
+					warnings.append("%s straight on a lane, not in a clip, was left out" % x.tag.to_lower())
+
+	## Automation: of a parameter dawkit has a lane for, or said to be left out.
+	func _point_lane(px: DawKitXml, unit: String, track_id: String) -> void:
+		var tgt := px.first("Target")
+		var whose := _p.track(track_id).name if _p.track(track_id) != null else "the project"
+		if tgt != null and not tgt.get_attr("expression").is_empty():
+			warnings.append("the MIDI %s automation on %s was left out: there is no lane for MIDI expression"
+					% [tgt.get_attr("expression"), whose])
+			return
+		if tgt == null or not _params.has(tgt.get_attr("parameter")):
+			warnings.append("automation on %s of a parameter it does not have, or does not say, was left out" % whose)
+			return
+		var holder := DawKitXml.new("Lanes", {"timeUnit": unit})
+		holder.children.append(px)
+		_points(holder, unit)
+
 
 	## A clip, and any clips inside it (Bitwig nests an audio clip's events in a clip of their
 	## own), flattened onto the track. `offset` is where the containing clip's content starts, in
@@ -689,16 +750,32 @@ class _Reader:
 		c.fade_out = _back(c.end(), cx.get_float("fadeOutTime"), fade_unit)
 		if not cx.get_attr("color").is_empty():
 			c.colour = Color.from_string(cx.get_attr("color"), Color(0, 0, 0, 0))
-		var inner := cx.first("Clips")
+		# An alias plays another clip's content, named by its id.
+		var content := cx
+		if cx.attrs.has("reference"):
+			var ref: DawKitXml = _by_id.get(cx.get_attr("reference"))
+			if ref == null:
+				warnings.append("the clip %s plays content that is not in the file; it is empty here" % c.name)
+				t.clips.append(c)
+				return
+			content = DawKitXml.new("Clip")
+			content.children.append(ref)
+		var inner := content.first("Clips")
 		if inner != null:
 			for ix in inner.all("Clip"):
 				_clip(t, ix, inner.get_attr("timeUnit", content_unit), origin)
 			return
-		var notes := cx.first("Notes")
-		var audio := cx.first("Audio")
-		var warps := cx.first("Warps")
+		var notes := content.first("Notes")
+		var audio := content.first("Audio")
+		var warps := content.first("Warps")
 		if warps != null and audio == null:
 			audio = warps.first("Audio")
+			c.source_offset = _unwarp(warps, cx, c, content_unit)
+		if content.first("Points") != null:
+			warnings.append("the automation in the clip %s on %s was left out: automation is kept on tracks, not in clips"
+					% [c.name if not c.name.is_empty() else "at %.2fs" % c.start, t.name])
+		if content.first("Video") != null:
+			warnings.append("the video in a clip on %s was left out" % t.name)
 		if notes != null:
 			var note_unit := notes.get_attr("timeUnit", content_unit)
 			var flat := PackedFloat64Array()
@@ -712,9 +789,40 @@ class _Reader:
 			c.notes = flat
 		elif audio != null and audio.first("File") != null:
 			c.source = audio.first("File").get_attr("path")
-			if not audio.first("File").get_bool("external") and not c.source in wanted_files:
+			if audio.first("File").get_bool("external"):
+				external_files.append(c)
+			elif not c.source in wanted_files:
 				wanted_files.append(c.source)
 		t.clips.append(c)
+
+	## Where in its file a warped clip starts, in seconds of the file. dawkit plays a file at its own
+	## speed, so a warp that is the tempo's own (the file's seconds go by as the song's do) is no
+	## change at all; one that stretches the file is said, and played unstretched.
+	func _unwarp(warps: DawKitXml, cx: DawKitXml, c: DawKitClip, clip_unit: String) -> float:
+		var file_unit := warps.get_attr("contentTimeUnit", "seconds")
+		var w := warps.all("Warp")
+		if w.size() < 2 or file_unit != "seconds":
+			warnings.append("a warped clip on the timeline could not be read; it plays from its start")
+			return 0.0
+		# The clip's time (in its content unit) against the file's seconds, as pairs.
+		var song := func(x: float) -> float: return _span(c.start - c.source_offset, x, clip_unit)
+		var at := cx.get_float("playStart")
+		var from := 0.0
+		var stretched := false
+		for k in w.size() - 1:
+			var a: DawKitXml = w[k]
+			var b: DawKitXml = w[k + 1]
+			var t0 := a.get_float("time")
+			var t1 := b.get_float("time")
+			var f0 := a.get_float("contentTime")
+			var f1 := b.get_float("contentTime")
+			var speed := (f1 - f0) / maxf(song.call(t1) - song.call(t0), 0.000001)
+			if absf(speed - 1.0) > WARP_TOLERANCE and not stretched:
+				stretched = true
+				warnings.append("a clip is stretched to %.0f%% of its file's speed; it plays at the file's own speed here" % (speed * 100.0))
+			if at >= t0 and at <= t1:
+				from = f0 + (at - t0) / maxf(t1 - t0, 0.000001) * (f1 - f0)
+		return from
 
 	func _pan(px: DawKitXml) -> float:
 		var v := px.get_float("value", 0.5)

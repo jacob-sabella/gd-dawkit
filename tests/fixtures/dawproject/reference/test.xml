@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Project version="1.0">
+    <Application name="Test" version="1.0"/>
+    <Structure>
+        <Track contentType="" id="id0" name="Master">
+            <Channel audioChannels="2" role="master" id="id1">
+                <Pan unit="normalized" value="0.500000" id="id3"/>
+                <Volume unit="linear" value="1.000000" id="id2"/>
+            </Channel>
+        </Track>
+        <Track contentType="notes" id="id6" name="Track 1" color="#000000">
+            <Channel audioChannels="2" destination="id1" role="regular" id="id7">
+                <Pan unit="normalized" value="0.500000" id="id9"/>
+                <Volume unit="linear" value="1.000000" id="id8"/>
+            </Channel>
+        </Track>
+        <Track contentType="notes" id="id13" name="Track 2" color="#111111">
+            <Channel audioChannels="2" destination="id1" role="regular" id="id14">
+                <Pan unit="normalized" value="0.500000" id="id16"/>
+                <Volume unit="linear" value="1.000000" id="id15"/>
+            </Channel>
+        </Track>
+        <Track contentType="notes" id="id20" name="Track 3" color="#222222">
+            <Channel audioChannels="2" destination="id1" role="regular" id="id21">
+                <Pan unit="normalized" value="0.500000" id="id23"/>
+                <Volume unit="linear" value="1.000000" id="id22"/>
+            </Channel>
+        </Track>
+    </Structure>
+    <Arrangement id="id4">
+        <Lanes timeUnit="beats" id="id5">
+            <Lanes track="id6" id="id10">
+                <Clips id="id11">
+                    <Clip time="0.0" duration="4.0" name="Clip 0">
+                        <Notes id="id12">
+                            <Note time="0.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="0.500000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.500000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.500000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.500000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                        </Notes>
+                    </Clip>
+                </Clips>
+            </Lanes>
+            <Lanes track="id13" id="id17">
+                <Clips id="id18">
+                    <Clip time="8.0" duration="4.0" name="Clip 1">
+                        <Notes id="id19">
+                            <Note time="0.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="0.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                        </Notes>
+                    </Clip>
+                </Clips>
+            </Lanes>
+            <Lanes track="id20" id="id24">
+                <Clips id="id25">
+                    <Clip time="16.0" duration="4.0" name="Clip 2">
+                        <Notes id="id26">
+                            <Note time="0.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="0.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.000000" duration="0.500000" channel="0" key="60" vel="0.800000" rel="0.500000"/>
+                            <Note time="1.500000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.000000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                            <Note time="2.500000" duration="0.500000" channel="0" key="60" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.000000" duration="0.500000" channel="0" key="36" vel="0.800000" rel="0.500000"/>
+                            <Note time="3.500000" duration="0.500000" channel="0" key="48" vel="0.800000" rel="0.500000"/>
+                        </Notes>
+                    </Clip>
+                </Clips>
+            </Lanes>
+        </Lanes>
+    </Arrangement>
+    <Scenes/>
+</Project>

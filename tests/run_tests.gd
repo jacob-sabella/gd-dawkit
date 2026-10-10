@@ -33,6 +33,7 @@ func _initialize() -> void:
 	_test_the_click_follows_the_tempo_map()
 	_test_automation_is_read_along_the_song()
 	_test_automation_survives_the_file_without_our_extras()
+	_test_the_official_examples_open_and_come_back()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -344,8 +345,9 @@ func _test_a_bitwig_file_opens() -> void:
 	check("the drum loop's audio event, from inside its clip (%d)" % loop.clips.size(),
 			loop.clips.size() == 1 and loop.clips[0].source == "audio/Drumfunk3 170bpm.wav")
 	close("its level, from a linear gain", loop.volume_db, linear_to_db(0.177125))
-	check("and it says the audio itself is not in the file",
-			(opened["warnings"] as PackedStringArray).size() == 1)
+	var said: PackedStringArray = opened["warnings"]
+	check("and it says what it could not carry: the stretch, the audio, the synth's state (%s)" % said,
+			said.size() == 3 and "88%" in said[0] and "Drumfunk3" in said[1] and "Surge XT" in said[2])
 
 
 func _test_odd_names_survive_the_xml() -> void:
@@ -820,3 +822,125 @@ func _test_automation_survives_the_file_without_our_extras() -> void:
 					same = same and absf(b.points[i][0] - a.points[i][0]) < 0.0001 \
 							and absf(b.points[i][1] - a.points[i][1]) < 0.001 and int(b.points[i][2]) == int(a.points[i][2])
 			check("%s's %s is in the XML itself (%s)" % [t.name, a.target, b.points if b else null], same)
+
+
+## The official DAWproject examples (tests/fixtures/dawproject/reference): what each should open
+## as -- per clip [track, start s, length s, source offset s, fade s, notes] -- and the warning it
+## should give for what dawkit cannot carry, "" for none.
+const EXAMPLES := {
+	"AudioFILE_WITH_ABSOLUTE_PATH": [[[0, 0.0, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioFILE_WITH_RELATIVE_PATH": [[[0, 0.0, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioRAW_BEATS": [[[0, 0.0, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioRAW_BEATSClipstart": [[[0, 0.3871, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioRAW_BEATSOffset": [[[0, 0.0, 3.0968, 1.0, 0.0, 0]], ""],
+	"AudioRAW_BEATSWithFades": [[[0, 0.0, 3.0968, 0.0, 0.1, 0]], ""],
+	"AudioRAW_SECONDS": [[[0, 0.0, 3.097, 0.0, 0.0, 0]], ""],
+	"AudioRAW_SECONDSClipstart": [[[0, 1.0, 3.097, 0.0, 0.0, 0]], ""],
+	"AudioRAW_SECONDSOffset": [[[0, 0.0, 3.097, 1.0, 0.0, 0]], ""],
+	"AudioRAW_SECONDSWithFades": [[[0, 0.0, 3.097, 0.0, 0.1, 0]], ""],
+	"AudioWARPED": [[[0, 0.0, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioWARPEDClipstart": [[[0, 0.3871, 3.0968, 0.0, 0.0, 0]], ""],
+	"AudioWARPEDOffset": [[[0, 0.0, 3.0968, 0.3871, 0.0, 0]], ""],
+	"AudioWARPEDWithFades": [[[0, 0.0, 3.0968, 0.0, 0.0968, 0]], ""],
+	"MIDI-CC1-AutomationInClips": [[[0, 0.0, 3.9024, 0.0, 0.0, 0]], "automation in the clip"],
+	"MIDI-CC1-AutomationOnTrack": [[], "no lane for MIDI expression"],
+	"MIDI-PitchBend-AutomationInClips": [[[0, 0.0, 3.9024, 0.0, 0.0, 0]], "automation in the clip"],
+	"MIDI-PitchBend-AutomationOnTrack": [[], "no lane for MIDI expression"],
+	"test": [[[0, 0.0, 2.0, 0.0, 0.0, 8], [1, 4.0, 2.0, 0.0, 0.0, 8], [2, 8.0, 2.0, 0.0, 0.0, 8]], ""],
+	"test-complex": [[[0, 0.0, 2.0, 0.0, 0.0, 8], [0, 16.0, 2.0, 0.0, 0.0, 8], [1, 4.0, 2.0, 0.0, 0.0, 8],
+			[1, 20.0, 2.0, 0.0, 0.0, 8], [2, 8.0, 2.0, 0.0, 0.0, 8], [2, 24.0, 2.0, 0.0, 0.0, 8]],
+			"state of Limiter is not in the file"],
+}
+
+
+## Each example zipped as the .dawproject the reference implementation wrote: its project.xml,
+## and the sound beside it unless the clip points outside the file.
+func _example(name: String) -> String:
+	var fixtures := ProjectSettings.globalize_path("res://tests/fixtures/dawproject/reference")
+	var xml := FileAccess.get_file_as_string(fixtures.path_join(name + ".xml")).replace("@FIXTURES@", fixtures)
+	var dir := _tmp("examples").path_join("target")
+	DirAccess.make_dir_recursive_absolute(dir)
+	# FILE_WITH_RELATIVE_PATH's sound is at ../test-data/, as in the reference repository.
+	var data := _tmp("examples").path_join("test-data")
+	DirAccess.make_dir_recursive_absolute(data)
+	DirAccess.copy_absolute(fixtures.path_join("white-glasses.wav"), data.path_join("white-glasses.wav"))
+	var file := dir.path_join(name + ".dawproject")
+	var w := ZIPPacker.new()
+	w.open(file)
+	w.start_file("project.xml")
+	w.write_file(xml.to_utf8_buffer())
+	w.close_file()
+	if not 'external="true"' in xml and 'path="white-glasses.wav"' in xml:
+		w.start_file("white-glasses.wav")
+		w.write_file(FileAccess.get_file_as_bytes(fixtures.path_join("white-glasses.wav")))
+		w.close_file()
+	w.close()
+	return file
+
+
+func _valid(file: String) -> String:
+	var zip := ZIPReader.new()
+	zip.open(file)
+	var out := file.get_basename() + "_xml"
+	DirAccess.make_dir_recursive_absolute(out)
+	FileAccess.open(out.path_join("project.xml"), FileAccess.WRITE).store_buffer(zip.read_file("project.xml"))
+	zip.close()
+	var said: Array = []
+	var rc := OS.execute("xmllint", ["--noout", "--schema",
+			ProjectSettings.globalize_path("res://tests/fixtures/dawproject/Project.xsd"),
+			out.path_join("project.xml")], said, true)
+	return "" if rc == 0 else str(said).substr(0, 300)
+
+
+func _test_the_official_examples_open_and_come_back() -> void:
+	var lint := OS.execute("sh", ["-c", "command -v xmllint"]) == 0
+	if not lint:
+		print("SKIP  xmllint is not installed: the examples' re-saves are not checked against the schema")
+	for name in EXAMPLES:
+		var want: Array = EXAMPLES[name]
+		var media := _tmp("examples").path_join(name + "_media")
+		var opened := DawKitDawproject.open(_example(name), media)
+		var p: DawKitProject = opened["project"]
+		check("%s opens (%s)" % [name, opened["error"]], p != null)
+		if p == null:
+			continue
+		var warnings: PackedStringArray = opened["warnings"]
+		var expected: String = want[1]
+		check("%s says what it left out, and only that (%s)" % [name, warnings],
+				warnings.size() == (0 if expected == "" else 1)
+				and (expected == "" or expected in warnings[0]))
+		var got: Array = []
+		for i in p.tracks.size():
+			for c in p.tracks[i].clips:
+				got.append([i, c.start, c.length, c.source_offset, c.fade_in, c.note_count()])
+		var clips: Array = want[0]
+		var same := got.size() == clips.size()
+		for i in mini(got.size(), clips.size()):
+			for k in 6:
+				same = same and absf(float(got[i][k]) - float(clips[i][k])) < 0.0001
+			same = same and is_equal_approx(p.tracks[got[i][0]].clips.filter(
+					func(c): return is_equal_approx(c.start, got[i][1]))[0].fade_out, got[i][4])
+		check("%s has its clips where they sound (%s)" % [name, got], same)
+		for t in p.tracks:
+			for c in t.clips:
+				if c.source != "":
+					var heard := c.source if c.source.is_absolute_path() else media.path_join(c.source)
+					check("%s's sound is found (%s)" % [name, c.source], FileAccess.file_exists(heard))
+		var again := _tmp("examples").path_join(name + "_again.dawproject")
+		DawKitDawproject.save(p, again, media)
+		if lint:
+			var said := _valid(again)
+			check("%s saved again is valid DAWproject (%s)" % [name, said], said == "")
+		var back: DawKitProject = DawKitDawproject.open(again, media + "_again")["project"]
+		check("%s saved and opened is the same project (%s)" % [name,
+				p.first_difference(back) if back else "did not open"], back != null and p.same_as(back))
+		var bare := _tmp("examples").path_join(name + "_bare.dawproject")
+		_without_extras(again, bare)
+		var plain: DawKitProject = DawKitDawproject.open(bare, media + "_bare")["project"]
+		check("%s comes back the same without our extras too (%s)" % [name,
+				p.first_difference(plain) if plain else "did not open"], plain != null and p.same_as(plain))
+	var p: DawKitProject = DawKitDawproject.open(_example("test-complex"), _tmp("examples").path_join("complex"))["project"]
+	check("test-complex keeps its master Limiter, its volume lane and its markers",
+			p.master.effects.size() == 1 and p.master.effects[0].name == "Limiter"
+			and p.tracks[0].automation.size() == 1 and p.tracks[0].automation[0].target == "volume"
+			and p.markers.size() == 2 and p.markers[1].name == "Chorus")

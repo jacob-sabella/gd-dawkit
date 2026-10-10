@@ -1,0 +1,5 @@
+The official DAWproject examples: the project.xml of each file the reference implementation's own
+tests write (src/test/java/com/bitwig/dawproject/DawProjectTest.java, github.com/bitwig/dawproject
+at ee4dcdd, run with `./gradlew test`), and the one sound they embed, test-data/white-glasses.wav.
+MIT licensed, as ../LICENSE. dawkit's tests zip each back up as the .dawproject it came from.
+AudioFILE_WITH_ABSOLUTE_PATH.xml's path is written @FIXTURES@ here; the tests put this folder there.
