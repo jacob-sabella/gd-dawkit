@@ -21,6 +21,10 @@ var mute := false
 var solo := false
 var armed := false
 var monitor := Monitor.OFF
+## What it records from, as the program recording names it: an input device, a channel, keys.
+## Empty for whatever is chosen when recording. Kept as it is, not read: a project carries it
+## from one session to the next.
+var input := ""
 var effects: Array[DawKitEffect] = []
 var sends: Array[DawKitSend] = []
 var clips: Array[DawKitClip] = []
@@ -36,7 +40,7 @@ func _init(with_id := "", called := "") -> void:
 func to_dict() -> Dictionary:
 	return {"id": id, "name": name, "colour": colour.to_html(true), "parent": parent,
 			"volume_db": volume_db, "pan": pan, "mute": mute, "solo": solo, "armed": armed,
-			"monitor": monitor, "effects": effects.map(func(e): return e.to_dict()),
+			"monitor": monitor, "input": input, "effects": effects.map(func(e): return e.to_dict()),
 			"sends": sends.map(func(s): return s.to_dict()),
 			"clips": clips.map(func(c): return c.to_dict()),
 			"automation": automation.map(func(a): return a.to_dict())}
@@ -52,6 +56,7 @@ static func from_dict(d: Dictionary) -> DawKitTrack:
 	t.solo = bool(d.get("solo", false))
 	t.armed = bool(d.get("armed", false))
 	t.monitor = clampi(int(d.get("monitor", 0)), 0, 2) as Monitor
+	t.input = str(d.get("input", ""))
 	for e in d.get("effects", []):
 		t.effects.append(DawKitEffect.from_dict(e))
 	for s in d.get("sends", []):

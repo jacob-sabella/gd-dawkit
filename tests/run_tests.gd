@@ -86,6 +86,7 @@ static func sample() -> DawKitProject:
 	kick.effects.append(foreign)
 	var keys := p.add_track("Keys")
 	keys.armed = true
+	keys.input = "midi"
 	var tine := DawKitEffect.new()
 	tine.kind = "tine"
 	tine.name = "Tine"
@@ -161,6 +162,7 @@ func _test_every_field_is_in_the_plain_form() -> void:
 	var chords := back.track("t3").clips[0]
 	check("a MIDI clip keeps its notes (%d)" % chords.note_count(),
 			chords.is_midi() and chords.note_count() == 2 and chords.notes[7] == 64.0)
+	check("the track's input (%s)" % back.track("t3").input, back.track("t3").input == "midi" and kick.input == "")
 	check("sends by id, pre-fader", back.track("t3").sends[0].target == "t4" and back.track("t3").sends[0].pre_fader)
 	check("time signature, loop, markers", back.time_signature == Vector2i(6, 8) and back.loop_on
 			and back.markers.size() == 2 and back.markers[1].name == "Chorus")
@@ -313,7 +315,7 @@ func _test_a_file_without_our_extras_still_opens() -> void:
 	check("fades and the file offset are in the XML", kick.clips[0].fade_out == 0.25
 			and kick.clips[0].source_offset == 0.75 and kick.clips[0].muted)
 	check("what only the extras held is gone, and nothing else",
-			not back.loop_on and not back.track("t3").armed and kick.clips[0].gain_db == 0.0
+			not back.loop_on and not back.track("t3").armed and back.track("t3").input == "" and kick.clips[0].gain_db == 0.0
 			and kick.effects[0].wet == 1.0)
 
 

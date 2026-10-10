@@ -137,7 +137,7 @@ class _Writer:
 		ch.add("Volume", {"unit": "linear", "min": "0", "max": "2",
 				"value": DawKitXml.num(db_to_linear(t.volume_db)), "id": t.id + "-vol", "name": "Volume"})
 		_exact(t.id + "-vol", t.volume_db)
-		extras["tracks"][t.id] = {"armed": t.armed, "monitor": t.monitor,
+		extras["tracks"][t.id] = {"armed": t.armed, "monitor": t.monitor, "input": t.input,
 				"keys": t.sends.filter(func(s): return s.key).map(func(s): return s.to_dict())}
 		for k in kids:
 			_track(x, k)
@@ -493,6 +493,7 @@ class _Reader:
 		var tex: Dictionary = extras.get("tracks", {}).get(t.id, {})
 		t.armed = bool(tex.get("armed", false))
 		t.monitor = clampi(int(tex.get("monitor", 0)), 0, 2) as DawKitTrack.Monitor
+		t.input = str(tex.get("input", ""))
 		for k in tex.get("keys", []):
 			t.sends.append(DawKitSend.from_dict(k))
 		for child in tx.all("Track"):
