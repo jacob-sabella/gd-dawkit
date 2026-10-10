@@ -1,0 +1,13 @@
+; dawkit's own project: its tests and, later, a standalone app. The engine itself is the addon
+; in addons/dawkit, which is what another Godot project (a game) copies or submodules in.
+
+config_version=5
+
+[application]
+
+config/name="dawkit"
+config/features=PackedStringArray("4.7")
+
+[audio]
+
+driver/mix_rate=48000
