@@ -185,7 +185,9 @@ class _Writer:
 			tempo.add("Target", {"parameter": "tempo"})
 			for pt in p.tempo_points:
 				tempo.add("RealPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.num(pt[1]),
-						"interpolation": "linear" if pt[2] else "hold"})
+						"interpolation": "linear" if DawKitTempoMap.shape_of(pt[2]) != DawKitTempoMap.HOLD else "hold"})
+			# DAWproject has one kind of ramp; which kind each one is, is ours.
+			extras["tempo_points"] = p.tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])])
 
 	func _clip(clips: DawKitXml, t: DawKitTrack, c: DawKitClip) -> void:
 		var x := clips.add("Clip", {"time": DawKitXml.num(c.start), "duration": DawKitXml.num(c.length),
@@ -470,12 +472,22 @@ class _Reader:
 			var at := px.get_float("time")
 			var beat := m.beat_at(at) if unit == "seconds" else at
 			var bpm := px.get_float("value", _p.tempo)
-			var ramps := px.get_attr("interpolation", "hold") == "linear"
+			var ramps := DawKitTempoMap.RAMP_BEATS if px.get_attr("interpolation", "hold") == "linear" else DawKitTempoMap.HOLD
 			if first and beat > 0.0:
 				# The transport's tempo holds until the first point.
 				m.set_point(0.0, _p.tempo, false)
 			m.set_point(beat, bpm, ramps)
 			first = false
+		# Our own ramps in seconds, while the XML still says the same points.
+		var exact: Array = extras.get("tempo_points", [])
+		if exact.size() == m.points.size():
+			var agree := true
+			for i in exact.size():
+				agree = agree and absf(float(exact[i][0]) - m.points[i][0]) < AGREE \
+						and absf(float(exact[i][1]) - m.points[i][1]) < AGREE \
+						and (DawKitTempoMap.shape_of(exact[i][2]) == DawKitTempoMap.HOLD) == (m.points[i][2] == DawKitTempoMap.HOLD)
+			if agree:
+				m = DawKitTempoMap.from_array(exact)
 		_map = m
 		_p.tempo = m.points[0][1]
 		_p.tempo_points = [] if m.is_constant() and not m.points[0][2] else m.to_array()

@@ -666,7 +666,7 @@ func _test_the_tempo_map_counts_beats_into_seconds() -> void:
 	close("before the change it is still 120", m.seconds_at(2.0), 1.0)
 	close("the tempo is read where it holds", m.bpm_at(5.0), 60.0)
 	var ramp := DawKitTempoMap.new(60.0)
-	ramp.points[0][2] = true
+	ramp.points[0][2] = DawKitTempoMap.RAMP_BEATS
 	ramp.set_point(4.0, 120.0)
 	ramp._index()
 	close("a ramp's tempo is a straight line in beats", ramp.bpm_at(2.0), 90.0)
@@ -679,6 +679,15 @@ func _test_the_tempo_map_counts_beats_into_seconds() -> void:
 	check("seconds and beats are each other's inverse, across the ramp", round_trip)
 	var back := DawKitTempoMap.from_array(ramp.to_array())
 	close("and the map survives its plain form", back.seconds_at(4.0), ramp.seconds_at(4.0), 0.0000001)
+	# Reaper's kind: 60 -> 120 bpm in a straight line over time, 4 beats taking 120*4/180 s.
+	var timed := DawKitTempoMap.new(60.0, [[0.0, 60.0, DawKitTempoMap.RAMP_SECONDS], [4.0, 120.0]])
+	close("a ramp in time covers its beats in 120 B / (T0 + T1) seconds", timed.seconds_at(4.0), 480.0 / 180.0, 0.000001)
+	close("half way in time it is half way in tempo", timed.bpm_at(timed.beat_at(timed.seconds_at(4.0) * 0.5)), 90.0, 0.000001)
+	var timed_round := true
+	for b in [0.25, 1.0, 2.5, 3.999, 7.0]:
+		timed_round = timed_round and absf(timed.beat_at(timed.seconds_at(b)) - b) < 0.000001
+	check("and its seconds and beats are each other's inverse", timed_round)
+	check("an older map's true is a ramp in beats", DawKitTempoMap.shape_of(true) == DawKitTempoMap.RAMP_BEATS)
 
 
 ## Bitwig's example, with the tempo halved at beat 4: the bass clip and its notes, given in beats,
@@ -722,7 +731,8 @@ func _test_a_file_with_tempo_changes_opens_where_it_sounds() -> void:
 
 func _test_a_tempo_map_survives_the_file() -> void:
 	var p := sample()
-	p.tempo_points = [[0.0, p.tempo, false], [8.0, p.tempo * 0.75, true], [16.0, p.tempo * 1.5, false]]
+	p.tempo_points = [[0.0, p.tempo, DawKitTempoMap.HOLD], [8.0, p.tempo * 0.75, DawKitTempoMap.RAMP_SECONDS],
+			[16.0, p.tempo * 1.5, DawKitTempoMap.RAMP_BEATS], [24.0, p.tempo, DawKitTempoMap.HOLD]]
 	check("a project with a tempo map is sound (%s)" % [p.problems()], p.problems().is_empty())
 	var file := _tmp("tempo_map.dawproject")
 	DawKitDawproject.save(p, file, _media_root())
@@ -731,7 +741,9 @@ func _test_a_tempo_map_survives_the_file() -> void:
 			back != null and p.same_as(back))
 	_without_extras(file, _tmp("tempo_plain.dawproject"))
 	var plain: DawKitProject = DawKitDawproject.open(_tmp("tempo_plain.dawproject"), _tmp("tempo_plain_media"))["project"]
-	check("the map is in the XML itself, for any DAW", plain != null and plain.tempo_points == p.tempo_points)
+	check("the map is in the XML itself, for any DAW, every ramp a ramp (%s)" % [plain.tempo_points if plain else null],
+			plain != null and plain.tempo_points.map(func(pt): return [pt[0], pt[1], pt[2] != 0])
+				== p.tempo_points.map(func(pt): return [pt[0], pt[1], pt[2] != 0]))
 	if OS.execute("sh", ["-c", "command -v xmllint"]) == 0:
 		var zip := ZIPReader.new()
 		zip.open(file)

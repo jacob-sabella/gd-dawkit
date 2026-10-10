@@ -14,7 +14,7 @@ const MASTER_ID := "master"
 
 var title := "Untitled"
 var tempo := 120.0
-## The tempo's changes, as DawKitTempoMap's points ([beat, bpm, ramps], the first at beat 0 and at
+## The tempo's changes, as DawKitTempoMap's points ([beat, bpm, shape], the first at beat 0 and at
 ## `tempo`); empty for a song at one tempo. Clips and markers are in seconds whatever this says:
 ## the map is for counting bars and beats, and for a file that counts in them.
 var tempo_points: Array = []
@@ -120,7 +120,7 @@ func problems() -> PackedStringArray:
 
 func to_dict() -> Dictionary:
 	return {"format_version": FORMAT_VERSION, "title": title, "tempo": tempo,
-			"tempo_points": tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), bool(pt[2])]),
+			"tempo_points": tempo_points.map(func(pt): return [float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])]),
 			"time_signature": [time_signature.x, time_signature.y], "length": length,
 			"metronome": metronome,
 			"loop": {"on": loop_on, "start": loop_start, "end": loop_end},
@@ -134,7 +134,7 @@ static func from_dict(d: Dictionary) -> DawKitProject:
 	p.title = str(d.get("title", "Untitled"))
 	p.tempo = float(d.get("tempo", 120.0))
 	for pt in d.get("tempo_points", []):
-		p.tempo_points.append([float(pt[0]), float(pt[1]), bool(pt[2])])
+		p.tempo_points.append([float(pt[0]), float(pt[1]), DawKitTempoMap.shape_of(pt[2])])
 	var sig: Array = d.get("time_signature", [4, 4])
 	p.time_signature = Vector2i(int(sig[0]), int(sig[1]))
 	p.length = float(d.get("length", 0.0))

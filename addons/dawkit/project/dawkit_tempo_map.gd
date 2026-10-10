@@ -4,40 +4,54 @@ extends RefCounted
 ## Where every beat falls in seconds, for a song whose tempo changes.
 ##
 ## A list of points, each a beat, a tempo there, and how the tempo goes from there to the next
-## point: held until the next point, or ramped there in a straight line in tempo against beats,
-## as DAWproject's `hold` and `linear` say. Before the first point and after the last, the tempo
-## is held. A map of one point is a constant tempo.
+## point (`HOLD`, or a ramp to the next point's tempo). Before the first point and after the last,
+## the tempo is held. A map of one point is a constant tempo.
 ##
-## Ramps are exact, not stepped: over a ramp from T0 to T1 across B beats the tempo at beat b is
-## T0 + k*b with k = (T1 - T0) / B, so the seconds to reach b are (60 / k) * ln(T(b) / T0), and
-## the inverse is b = T0 * (exp(k * s / 60) - 1) / k.
+## Two kinds of ramp, because DAWs disagree. `RAMP_BEATS` is a straight line in tempo against
+## beats, as a curve drawn on a beat timeline is (DAWproject's `linear`): the tempo at beat b is
+## T0 + k*b with k = (T1 - T0) / B, the seconds to reach b are (60 / k) * ln(T(b) / T0), and the
+## inverse is b = T0 * (exp(k * s / 60) - 1) / k. `RAMP_SECONDS` is a straight line against time,
+## as Reaper's gradual tempo change is: over D = 120 B / (T0 + T1) seconds the tempo is T0 + a*t
+## with a = (T1 - T0) / D, the beats by t are (T0 t + a t^2 / 2) / 60, and the inverse is
+## t = (sqrt(T0^2 + 120 a b) - T0) / a. Both are exact, not stepped.
 
 const MIN_BPM := 1.0
+const HOLD := 0
+const RAMP_BEATS := 1
+const RAMP_SECONDS := 2
 
-## [beat, bpm, ramps] per point, in order of beat, the first at beat 0.
+## [beat, bpm, shape] per point, shape one of HOLD, RAMP_BEATS, RAMP_SECONDS, in order of beat, the first at beat 0.
 var points: Array = []
 ## The seconds at each point, kept in step with `points` by `_index`.
 var _starts := PackedFloat64Array()
 
 
 func _init(bpm := 120.0, changes: Array = []) -> void:
-	points = [[0.0, maxf(bpm, MIN_BPM), false]]
+	points = [[0.0, maxf(bpm, MIN_BPM), HOLD]]
 	for c in changes:
 		if c is Array and c.size() >= 2:
-			set_point(float(c[0]), float(c[1]), bool(c[2]) if c.size() > 2 else false)
+			set_point(float(c[0]), float(c[1]), shape_of(c[2]) if c.size() > 2 else HOLD)
+
+
+## A point's shape from what a file or an older map says: true is a ramp in beats.
+static func shape_of(v) -> int:
+	if typeof(v) == TYPE_BOOL:
+		return RAMP_BEATS if v else HOLD
+	return clampi(int(v), HOLD, RAMP_SECONDS)
 
 
 ## A point at `beat`, replacing any already there. A point at beat 0 changes the first tempo.
-func set_point(beat: float, bpm: float, ramps := false) -> void:
+func set_point(beat: float, bpm: float, shape: Variant = HOLD) -> void:
 	beat = maxf(beat, 0.0)
 	bpm = maxf(bpm, MIN_BPM)
+	var kind := shape_of(shape)
 	for p in points:
 		if is_equal_approx(p[0], beat):
 			p[1] = bpm
-			p[2] = ramps
+			p[2] = kind
 			_index()
 			return
-	points.append([beat, bpm, ramps])
+	points.append([beat, bpm, kind])
 	points.sort_custom(func(a, b): return a[0] < b[0])
 	_index()
 
@@ -90,9 +104,9 @@ static func from_array(a: Array) -> DawKitTempoMap:
 	m.points = []
 	for p in a:
 		if p is Array and p.size() >= 2:
-			m.points.append([maxf(float(p[0]), 0.0), maxf(float(p[1]), MIN_BPM), bool(p[2]) if p.size() > 2 else false])
+			m.points.append([maxf(float(p[0]), 0.0), maxf(float(p[1]), MIN_BPM), shape_of(p[2]) if p.size() > 2 else HOLD])
 	if m.points.is_empty():
-		m.points = [[0.0, 120.0, false]]
+		m.points = [[0.0, 120.0, HOLD]]
 	m.points.sort_custom(func(x, y): return x[0] < y[0])
 	m.points[0][0] = 0.0
 	m._index()
@@ -106,32 +120,58 @@ func _segment_of_beat(beat: float) -> int:
 	return i
 
 
-## How the tempo moves along segment `i` per beat: 0 when held, and after the last point.
+## The shape segment `i` really has: a ramp needs a next point, and one to a different tempo.
+func _shape(i: int) -> int:
+	if i + 1 >= points.size() or int(points[i][2]) == HOLD \
+			or is_equal_approx(points[i + 1][1], points[i][1]) or points[i + 1][0] <= points[i][0]:
+		return HOLD
+	return int(points[i][2])
+
+
+## How the tempo moves along a ramp in beats, per beat.
 func _slope(i: int) -> float:
-	if not points[i][2] or i + 1 >= points.size():
-		return 0.0
-	var span: float = points[i + 1][0] - points[i][0]
-	return (points[i + 1][1] - points[i][1]) / span if span > 0.0 else 0.0
+	return (points[i + 1][1] - points[i][1]) / (points[i + 1][0] - points[i][0])
+
+
+## How the tempo moves along a ramp in seconds, per second.
+func _rate(i: int) -> float:
+	var t0: float = points[i][1]
+	var t1: float = points[i + 1][1]
+	var length: float = 120.0 * (points[i + 1][0] - points[i][0]) / (t0 + t1)
+	return (t1 - t0) / length
 
 
 func _bpm_in(i: int, beats: float) -> float:
-	return points[i][1] + _slope(i) * beats
+	match _shape(i):
+		RAMP_BEATS:
+			return points[i][1] + _slope(i) * beats
+		RAMP_SECONDS:
+			return points[i][1] + _rate(i) * _seconds_in(i, beats)
+	return points[i][1]
 
 
 func _seconds_in(i: int, beats: float) -> float:
-	var k := _slope(i)
 	var t0: float = points[i][1]
-	if absf(k) < 1e-12:
-		return beats * 60.0 / t0
-	return 60.0 / k * log((t0 + k * beats) / t0)
+	match _shape(i):
+		RAMP_BEATS:
+			var k := _slope(i)
+			return 60.0 / k * log((t0 + k * beats) / t0)
+		RAMP_SECONDS:
+			var a := _rate(i)
+			return (sqrt(maxf(t0 * t0 + 120.0 * a * beats, 0.0)) - t0) / a
+	return beats * 60.0 / t0
 
 
 func _beats_in(i: int, seconds: float) -> float:
-	var k := _slope(i)
 	var t0: float = points[i][1]
-	if absf(k) < 1e-12:
-		return seconds * t0 / 60.0
-	return t0 * (exp(k * seconds / 60.0) - 1.0) / k
+	match _shape(i):
+		RAMP_BEATS:
+			var k := _slope(i)
+			return t0 * (exp(k * seconds / 60.0) - 1.0) / k
+		RAMP_SECONDS:
+			var a := _rate(i)
+			return (t0 * seconds + a * seconds * seconds * 0.5) / 60.0
+	return seconds * t0 / 60.0
 
 
 func _index() -> void:
