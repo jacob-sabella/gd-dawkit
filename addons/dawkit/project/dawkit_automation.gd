@@ -41,6 +41,11 @@ func add(seconds: float, value: float, shape := LINEAR) -> void:
 
 ## The value at `seconds`, or `fallback` when there are no points.
 func value_at(seconds: float, fallback := 0.0) -> float:
+	return value_in(points, seconds, fallback)
+
+
+## The same, for points kept somewhere other than a DawKitAutomation.
+static func value_in(points: Array, seconds: float, fallback := 0.0) -> float:
 	if points.is_empty():
 		return fallback
 	if seconds <= points[0][0]:
