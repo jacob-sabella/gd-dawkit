@@ -37,6 +37,21 @@ overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC 
 count, checked against the file's own MD5. In GDScript it takes about 9 s for a 3-minute 24-bit
 stereo file; tests compare 11 files from the reference encoder to the WAVs they came from.
 
+## The native core
+
+`native/` is a GDExtension in C++ (godot-cpp, MIT), built by `tools/build_native.sh` into
+`addons/dawkit/bin` (cmake and a C++17 compiler; `tools/test.sh` builds it first). It mixes the
+engine's sound sample by sample, which Godot's own players cannot: a player can only start on the
+next mix step, so two started together can be a step apart.
+
+`DawKitTransport` is the song's clock, shared by every lane: the lanes count Godot's mix blocks
+between them (the first mixed in a block moves the clock on), and the song is anchored to that
+clock, so every lane turns a moment into the same song sample. `DawKitLane` is an AudioStream
+for one track: its clips (sound, start, length, offset, gain, fades as curves, a looped stretch),
+played wherever the transport says the song is, on the track's own bus. The tests mix two lanes
+a block at a time in alternating order, and a third that joined late, and find a clip's first
+sample on the same frame in all three.
+
 ## Metronome
 
 `DawKitMetronome.bar(tempo, beats, rate)` is one bar of clicks as a looping stream, each click

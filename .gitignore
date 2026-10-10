@@ -1,3 +1,6 @@
 .godot/
 *.import
 /build/
+native/build/
+native/extension_api.json
+addons/dawkit/bin/

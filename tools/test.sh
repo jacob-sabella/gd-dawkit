@@ -2,6 +2,8 @@
 # Run dawkit's checks headless. Exits non-zero on any failure or script error.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# The native core first: its classes are in the class cache only once it is built.
+tools/build_native.sh || { echo "test.sh: the native core did not build" >&2; exit 1; }
 # The class cache has to exist before a script can name DawKit* classes.
 godot --headless --path . --import >/dev/null 2>&1
 LOG="$(mktemp)"

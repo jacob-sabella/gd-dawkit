@@ -24,6 +24,7 @@ func _initialize() -> void:
 	_test_a_file_is_brought_in_as_the_engine_plays_it()
 	_test_ogg_and_mp3_are_decoded()
 	_test_flac_decodes_to_its_last_bit()
+	_test_lanes_play_on_the_same_sample()
 	_test_what_cannot_be_read_says_why()
 	_test_the_click_is_on_the_beat()
 	_test_the_instrument_plays_each_note_on_its_sample()
@@ -612,6 +613,108 @@ func _test_flac_decodes_to_its_last_bit() -> void:
 	DawKitAudioFile.read(ProjectSettings.globalize_path(dir + "s24_stereo_8.flac"))
 	var ms := Time.get_ticks_msec() - started
 	print("flac: 9000 frames of 24-bit stereo in %d ms" % ms)
+
+
+## The native core (native/, a GDExtension): lanes sharing a transport, mixed a block at a time in
+## whatever order, as Godot's audio server mixes them.
+func _test_lanes_play_on_the_same_sample() -> void:
+	if not ClassDB.class_exists(&"DawKitTransport"):
+		check("the native core is built and loaded (tools/build_native.sh)", false)
+		return
+	var t = ClassDB.instantiate(&"DawKitTransport")
+	t.set_rate(48000)
+	var click := PackedFloat32Array()
+	click.resize(2 * 4800)
+	click[0] = 1.0
+	click[1] = 1.0
+	var lane := func(clips: Array) -> Object:
+		var l = ClassDB.instantiate(&"DawKitLane")
+		l.set_transport(t)
+		l.set_clips(clips)
+		return l
+	var a = lane.call([{"id": 1, "samples": click, "channels": 2, "rate": 48000, "start": 0.5, "length": 0.1}])
+	var b = lane.call([{"id": 1, "samples": click, "channels": 2, "rate": 48000, "start": 0.5, "length": 0.1}])
+	var pa = a.instantiate_playback()
+	var pb = b.instantiate_playback()
+	var out_a := PackedVector2Array()
+	var out_b := PackedVector2Array()
+	# Idle a few blocks, then the song starts at 0.4 s, 0.01 s from the clock's last block.
+	for k in 3:
+		out_a.append_array(pa.mix_audio(1.0, 512))
+		out_b.append_array(pb.mix_audio(1.0, 512))
+	t.play_from(0.4, 0.01)
+	var started: int = t.get_anchor_clock()
+	var pc = null
+	var out_c := PackedVector2Array()
+	for k in 20:
+		if k == 5:
+			# A lane that joins late, mixed first in its first block.
+			var c = lane.call([{"id": 1, "samples": click, "channels": 2, "rate": 48000, "start": 0.5, "length": 0.1}])
+			pc = c.instantiate_playback()
+			out_c.resize(out_a.size())
+		var order := [pa, pb] if k % 2 == 0 else [pb, pa]
+		if pc != null:
+			order.push_front(pc)
+		for p in order:
+			var got: PackedVector2Array = p.mix_audio(1.0, 512)
+			if p == pa:
+				out_a.append_array(got)
+			elif p == pb:
+				out_b.append_array(got)
+			else:
+				out_c.append_array(got)
+	var first := func(frames: PackedVector2Array) -> int:
+		for i in frames.size():
+			if frames[i].x > 0.5:
+				return i
+		return -1
+	var expected := started + int(0.1 * 48000)
+	check("two lanes sound a clip on the same sample, whichever is mixed first (%d, %d, wanted %d)" % [
+			first.call(out_a), first.call(out_b), expected], first.call(out_a) == expected and first.call(out_b) == expected)
+	check("and so does one that joined later (%d)" % first.call(out_c), first.call(out_c) == expected)
+	close("the song is where the lanes have got to", t.song_seconds(), 0.4 + (23 * 512 - started) / 48000.0, 0.0001)
+
+	# A fade, as a curve, and gain.
+	var dc := PackedFloat32Array()
+	dc.resize(48000)
+	dc.fill(1.0)
+	t.stop()
+	var f = lane.call([{"id": 2, "samples": dc, "channels": 1, "rate": 48000, "start": 0.0, "length": 1.0,
+			"gain": 0.5, "fade_in": 0.1, "fade_out": 0.1, "fade_shape": 1}])
+	var base_f: int = t.get_clock()
+	var pf = f.instantiate_playback()
+	t.play_from(0.0, 0.0)
+	var faded := PackedVector2Array()
+	for k in 100:
+		faded.append_array(pf.mix_audio(1.0, 480))
+	# Indices from when this lane began: the clock had run on before it.
+	var at0: int = t.get_anchor_clock() - base_f
+	close("a fade in starts from nothing", faded[at0].x, 0.0, 0.0001)
+	close("halfway through an equal-power fade it is at sin(45 deg)", faded[at0 + 2400].x, 0.5 * sin(PI / 4.0), 0.0005)
+	close("past it, the gain", faded[at0 + 24000].x, 0.5, 0.0001)
+	close("the fade out ends at nothing", faded[at0 + 47999].x, 0.0, 0.0001)
+	check("mono plays on both sides", is_equal_approx(faded[at0 + 24000].x, faded[at0 + 24000].y))
+
+	# A sound at another rate plays at its own speed; a clip's offset and the transport's loop.
+	var ramp := PackedFloat32Array()
+	for i in 24000:
+		ramp.append(i / 24000.0)
+	t.stop()
+	var g = lane.call([{"id": 3, "samples": ramp, "channels": 1, "rate": 24000, "start": 0.0, "length": 1.0, "offset": 0.25}])
+	var base_g: int = t.get_clock()
+	var pg = g.instantiate_playback()
+	t.set_loop(0.0, 0.5, true)
+	t.play_from(0.0, 0.0)
+	var heard := PackedVector2Array()
+	for k in 200:
+		heard.append_array(pg.mix_audio(1.0, 480))
+	var at1: int = t.get_anchor_clock() - base_g
+	close("a 24 kHz sound is read at its own speed, from its offset", heard[at1 + 12000].x, 0.5, 0.0001)
+	close("and the song loops round its range", heard[at1 + 24000 + 12000].x, 0.5, 0.0001)
+	t.set_loop(0.0, 0.0, false)
+	t.stop()
+	g.set_clips([{"id": 3, "start": 0.0, "length": 0.5}])
+	check("a sound given before is kept by its id, not sent again", g.clip_count() == 1)
 
 
 func _test_what_cannot_be_read_says_why() -> void:
