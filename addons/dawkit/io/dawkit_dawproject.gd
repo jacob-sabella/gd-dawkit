@@ -144,7 +144,7 @@ class _Writer:
 		var e := t.effects[i]
 		var did := "%s-fx%d" % [t.id, i]
 		var tag := "BuiltinDevice" if not e.kind.is_empty() else PLUGIN_TAGS.get(e.plugin_format, "Device")
-		var d := devices.add(tag, {"deviceName": e.name, "deviceRole": "audioFX", "loaded": "true",
+		var d := devices.add(tag, {"deviceName": e.name, "deviceRole": "instrument" if e.instrument else "audioFX", "loaded": "true",
 				"id": did, "name": e.name})
 		d.attrs["deviceID"] = BUILTIN_PREFIX + e.kind if not e.kind.is_empty() else e.plugin_id
 		if not e.values.is_empty():
@@ -416,6 +416,7 @@ class _Reader:
 	func _effect(dx: DawKitXml, did: String) -> DawKitEffect:
 		var e := DawKitEffect.new()
 		e.name = dx.get_attr("deviceName", dx.get_attr("name"))
+		e.instrument = dx.get_attr("deviceRole") == "instrument"
 		var device_id := dx.get_attr("deviceID")
 		if dx.tag == "BuiltinDevice" and device_id.begins_with(BUILTIN_PREFIX):
 			e.kind = device_id.substr(BUILTIN_PREFIX.length())

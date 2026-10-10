@@ -21,13 +21,16 @@ var state := PackedByteArray()
 ## The plugin format and id another DAW knows it by (e.g. "VST3", "CLAP"), if it came from one.
 var plugin_format := ""
 var plugin_id := ""
+## Makes sound from notes rather than changing sound: an instrument, first in a MIDI track's chain
+## (DAWproject's deviceRole "instrument"). The engine's own is "tine" (DawKitTine).
+var instrument := false
 
 
 func to_dict() -> Dictionary:
 	return {"kind": kind, "name": name, "enabled": enabled, "wet": wet, "preset": preset,
 			"values": Array(values), "names": Array(names),
 			"state": Marshalls.raw_to_base64(state), "plugin_format": plugin_format,
-			"plugin_id": plugin_id}
+			"plugin_id": plugin_id, "instrument": instrument}
 
 
 static func from_dict(d: Dictionary) -> DawKitEffect:
@@ -44,4 +47,5 @@ static func from_dict(d: Dictionary) -> DawKitEffect:
 	e.state = Marshalls.base64_to_raw(str(d.get("state", "")))
 	e.plugin_format = str(d.get("plugin_format", ""))
 	e.plugin_id = str(d.get("plugin_id", ""))
+	e.instrument = bool(d.get("instrument", false))
 	return e

@@ -13,7 +13,7 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
       project/              the project model (DawKitProject and its parts)
       io/                   DAWproject files (DawKitDawproject) and the XML they are made of;
                             audio files people bring (DawKitAudioFile)
-      engine/               the click (DawKitMetronome)
+      engine/               the click (DawKitMetronome) and the built-in instrument (DawKitTine)
     tests/                  the engine's own checks, run headless
     tools/test.sh           runs them
 
@@ -39,6 +39,13 @@ overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC 
 `DawKitMetronome.bar(tempo, beats, rate)` is one bar of clicks as a looping stream, each click
 starting at full level on its beat (the first beat higher and louder), so a player started at the
 right point in the bar keeps time and a recording of it can be measured against the beat.
+
+## Instrument
+
+`DawKitTine` is a two-operator electric piano, sixteen voices, with a damper and a sustain pedal.
+Played live a note at a time, or a whole clip at once with `render_notes(notes, seconds, rate)`,
+where each note starts on its own sample. In a project it is an effect of kind `"tine"` with
+`instrument` set, written to DAWproject as a `BuiltinDevice` with `deviceRole="instrument"`.
 
 ## DAWproject
 

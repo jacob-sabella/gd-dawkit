@@ -25,6 +25,8 @@ func _initialize() -> void:
 	_test_ogg_and_mp3_are_decoded()
 	_test_what_cannot_be_read_says_why()
 	_test_the_click_is_on_the_beat()
+	_test_the_instrument_plays_each_note_on_its_sample()
+	_test_an_instrument_is_an_instrument_in_the_file()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -77,6 +79,11 @@ static func sample() -> DawKitProject:
 	kick.effects.append(foreign)
 	var keys := p.add_track("Keys")
 	keys.armed = true
+	var tine := DawKitEffect.new()
+	tine.kind = "tine"
+	tine.name = "Tine"
+	tine.instrument = true
+	keys.effects.append(tine)
 	var chords := DawKitClip.new()
 	chords.start = 4.0
 	chords.length = 8.0
@@ -581,3 +588,65 @@ func _test_the_click_is_on_the_beat() -> void:
 	check("a click on each beat, to the sample (%s)" % [onsets], onsets == [0, 24000, 48000, 72000])
 	check("the first beat is the loud one", wav.data.decode_s16(0) > wav.data.decode_s16(24000 * 4))
 	close("3/4 at 90 is two seconds too", DawKitMetronome.bar_seconds(90.0, 3), 2.0)
+
+
+static func _first_sound(frames: PackedVector2Array, threshold := 0.0) -> int:
+	for i in frames.size():
+		if absf(frames[i].x) > threshold or absf(frames[i].y) > threshold:
+			return i
+	return -1
+
+
+static func _loudest(frames: PackedVector2Array, from: int, to: int) -> float:
+	var top := 0.0
+	for i in range(maxi(from, 0), mini(to, frames.size())):
+		top = maxf(top, maxf(absf(frames[i].x), absf(frames[i].y)))
+	return top
+
+
+func _test_the_instrument_plays_each_note_on_its_sample() -> void:
+	var one := PackedFloat64Array([0.4321, 0.9, 60, 100, 0])
+	var heard := DawKitTine.render_notes(one, 2.0, 48000.0)
+	check("a clip renders its length and a tail (%d)" % heard.size(),
+			heard.size() == int(ceil((2.0 + DawKitTine.TAIL_SECONDS) * 48000.0)))
+	# A voice starts at phase zero, so a note's first sample is a zero crossing: the first one
+	# with any sound in it is the next.
+	check("silence until the note, and the note on its own sample (%d)" % _first_sound(heard),
+			_first_sound(heard) == int(round(0.4321 * 48000.0)) + 1)
+	check("loud enough to hear (%.2f)" % _loudest(heard, 20000, 30000), _loudest(heard, 20000, 30000) > 0.1)
+	check("let go, it is damped: quiet 0.4s on (%.4f)" % _loudest(heard, int(1.3 * 48000), int(1.4 * 48000)),
+			_loudest(heard, int(1.3 * 48000), int(1.4 * 48000)) < 0.01)
+	var two := PackedFloat64Array([0.4321, 0.9, 60, 100, 0, 0.61803, 1.2, 67, 80, 0])
+	var both := DawKitTine.render_notes(two, 2.0, 48000.0)
+	var diff := PackedVector2Array()
+	diff.resize(both.size())
+	for i in both.size():
+		diff[i] = both[i] - heard[i]
+	check("a second note starts on its own sample too (%d)" % _first_sound(diff, 1e-6),
+			_first_sound(diff, 1e-6) == int(round(0.61803 * 48000.0)) + 1)
+	var late := DawKitTine.render_notes(PackedFloat64Array([2.5, 3.0, 60, 100, 0]), 2.0)
+	check("a note after the clip's end is not played", _first_sound(late) == -1)
+	var held := DawKitTine.new()
+	held.note_on(48, 127)
+	held.render(4800)
+	held.sustain(true)
+	held.note_off(48)
+	var ring := _loudest(held.render(48000), 40000, 48000)
+	check("the pedal holds a let-go note (%.3f)" % ring, ring > 0.05)
+
+
+func _test_an_instrument_is_an_instrument_in_the_file() -> void:
+	var file := _tmp("instrument.dawproject")
+	DawKitDawproject.save(sample(), file, _media_root())
+	var zip := ZIPReader.new()
+	zip.open(file)
+	var xml := zip.read_file("project.xml").get_string_from_utf8()
+	zip.close()
+	check("the tine is written as a built-in instrument", xml.contains('deviceRole="instrument"')
+			and xml.contains('deviceID="dawkit:tine"'))
+	var bare := _tmp("instrument_bare.dawproject")
+	_without_extras(file, bare)
+	var back: DawKitProject = DawKitDawproject.open(bare, _tmp("instrument_media"))["project"]
+	var keys := back.track("t3") if back != null else null
+	check("and read back as one, from the XML alone", keys != null and not keys.effects.is_empty()
+			and keys.effects[0].instrument and keys.effects[0].kind == "tine")
