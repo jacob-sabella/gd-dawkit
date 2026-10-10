@@ -24,6 +24,7 @@ func _initialize() -> void:
 	_test_a_file_is_brought_in_as_the_engine_plays_it()
 	_test_ogg_and_mp3_are_decoded()
 	_test_what_cannot_be_read_says_why()
+	_test_the_click_is_on_the_beat()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -561,3 +562,22 @@ func _test_what_cannot_be_read_says_why() -> void:
 	check("a compressed WAV says what to do",
 			str(DawKitAudioFile.read(_write("adpcm.wav", adpcm))["error"]).contains("save it as PCM"))
 	check("a missing file says so", str(DawKitAudioFile.read(_tmp("nope.wav"))["error"]).contains("could not be read"))
+
+
+func _test_the_click_is_on_the_beat() -> void:
+	var wav := DawKitMetronome.bar(120.0, 4, 48000)
+	close("a bar at 120 in 4/4 is two seconds", wav.get_length(), 2.0)
+	check("and loops whole", wav.loop_mode == AudioStreamWAV.LOOP_FORWARD and wav.loop_end == 96000)
+	# Onsets: the first sample over a quarter of full scale after a silence.
+	var onsets: Array[int] = []
+	var quiet := 0
+	for f in wav.data.size() / 4:
+		var v := absi(wav.data.decode_s16(f * 4))
+		if v > 8000 and quiet > 1000:
+			onsets.append(f)
+		quiet = 0 if v > 50 else quiet + 1
+	if wav.data.decode_s16(0) > 8000:
+		onsets.push_front(0)
+	check("a click on each beat, to the sample (%s)" % [onsets], onsets == [0, 24000, 48000, 72000])
+	check("the first beat is the loud one", wav.data.decode_s16(0) > wav.data.decode_s16(24000 * 4))
+	close("3/4 at 90 is two seconds too", DawKitMetronome.bar_seconds(90.0, 3), 2.0)

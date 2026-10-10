@@ -13,6 +13,7 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
       project/              the project model (DawKitProject and its parts)
       io/                   DAWproject files (DawKitDawproject) and the XML they are made of;
                             audio files people bring (DawKitAudioFile)
+      engine/               the click (DawKitMetronome)
     tests/                  the engine's own checks, run headless
     tools/test.sh           runs them
 
@@ -32,6 +33,12 @@ extensible), AIFF and AIFF-C, Ogg Vorbis and MP3 into samples, folding more than
 stereo. `bring_in(source, dest)` puts a file in a project's media: copied untouched when the engine
 plays it as it is, otherwise written as a 32-bit float WAV, with its length and a 50-per-second
 overview. Ogg and MP3 are decoded by Godot at the audio server's mix rate. FLAC is not read yet.
+
+## Metronome
+
+`DawKitMetronome.bar(tempo, beats, rate)` is one bar of clicks as a looping stream, each click
+starting at full level on its beat (the first beat higher and louder), so a player started at the
+right point in the bar keeps time and a recording of it can be measured against the beat.
 
 ## DAWproject
 
