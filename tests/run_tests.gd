@@ -30,6 +30,7 @@ func _initialize() -> void:
 	_test_the_tempo_map_counts_beats_into_seconds()
 	_test_a_file_with_tempo_changes_opens_where_it_sounds()
 	_test_a_tempo_map_survives_the_file()
+	_test_the_click_follows_the_tempo_map()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -743,3 +744,23 @@ func _test_a_tempo_map_survives_the_file() -> void:
 		check("and valid against the official schema (%s)" % str(said).substr(0, 300), rc == 0)
 	p.tempo_points = [[0.0, 90.0, false]]
 	check("a map that does not start at the tempo is a problem", not p.problems().is_empty())
+
+
+func _test_the_click_follows_the_tempo_map() -> void:
+	var m := DawKitTempoMap.new(120.0)
+	m.set_point(4.0, 60.0)
+	var clicks := DawKitMetronome.span_clicks(m, 4, 1.25, 4.0)
+	var times := clicks.map(func(c): return snappedf(c[0], 0.0001))
+	# Beats 3, 4 at 120 (1.5 s, 2.0 s), then 5, 6, 7 at 60 (3.0, 4.0, 5.0 s), from 1.25 s.
+	check("clicks fall on the beats through the change (%s)" % [times], times == [0.25, 0.75, 1.75, 2.75, 3.75])
+	check("and the bar's first is accented", clicks.map(func(c): return c[1]) == [false, true, false, false, false])
+	var rate := 48000
+	var wav := DawKitMetronome.span(m, 4, 1.25, 4.0, rate)
+	var first := -1
+	for f in wav.data.size() / 4:
+		if wav.data.decode_s16(f * 4) != 0:
+			first = f
+			break
+	check("rendered, the first click starts on its sample (%d)" % first, first == int(round(0.25 * rate)))
+	var accent := int(round(0.75 * rate))
+	check("and the accent is the louder one", absi(wav.data.decode_s16(accent * 4)) > absi(wav.data.decode_s16(first * 4)))
