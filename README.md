@@ -5,7 +5,7 @@ markers, tempo), a mixer and transport on Godot's own `AudioServer`, and project
 **DAWproject**, the open interchange format that Bitwig, Studio One and Cubase read and write.
 
 It has no user interface of its own. A host application (a game, a 3D studio, an app) draws
-whatever it likes and drives the engine through its API. reaper-3d is the first host.
+whatever it likes and drives the engine through its API. dawlings (a 3D studio game) is the first host.
 
 ## Layout
 
