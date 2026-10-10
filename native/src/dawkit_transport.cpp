@@ -29,11 +29,11 @@ int64_t DawKitTransport::claim_block(int64_t &seen, int64_t frames) {
 
 int64_t DawKitTransport::song_frame_at(int64_t at) const {
 	if (!playing.load()) {
-		return -1;
+		return NOT_PLAYING;
 	}
 	int64_t since = at - anchor_clock.load();
 	if (since < 0) {
-		return -1;
+		return NOT_PLAYING;
 	}
 	int64_t song = anchor_song.load() + since;
 	if (looping.load()) {
@@ -61,7 +61,7 @@ void DawKitTransport::stop() {
 
 double DawKitTransport::song_seconds() const {
 	int64_t at = song_frame_at(clock.load());
-	if (at < 0) {
+	if (at == NOT_PLAYING) {
 		return (double)anchor_song.load() / rate.load();
 	}
 	return (double)at / rate.load();

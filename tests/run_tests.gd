@@ -749,6 +749,16 @@ func _test_lanes_play_on_the_same_sample() -> void:
 	check("while a lane not held plays through it", k_out[at2 + 1000].x > 0.4)
 	t.set_hold(-1.0)
 	t.stop()
+	# A count-in from the song's top runs before it: a lane plays song time below 0.
+	var early = lane.call([{"id": 6, "wav": wav, "start": -1.0, "length": 0.5}])
+	var base_e: int = t.get_clock()
+	var pe = early.instantiate_playback()
+	t.play_from(-1.0, 0.0)
+	var e_out := PackedVector2Array()
+	for k in 20:
+		e_out.append_array(pe.mix_audio(1.0, 480))
+	check("before the song's start, a clip there sounds", e_out[t.get_anchor_clock() - base_e + 100].x > 0.4)
+	t.stop()
 
 
 func _test_what_cannot_be_read_says_why() -> void:

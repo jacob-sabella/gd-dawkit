@@ -22,7 +22,9 @@ class DawKitTransport : public RefCounted {
 public:
 	// The frames this lane had mixed before this block -> the clock frame the block starts at.
 	int64_t claim_block(int64_t &seen, int64_t frames);
-	// The song frame at clock frame `clock`, or -1 while stopped or before the start.
+	// The song frame at clock frame `clock` (below 0 before the song's start: a count-in from its
+	// top), or NOT_PLAYING while stopped or before the transport started.
+	static constexpr int64_t NOT_PLAYING = INT64_MIN;
 	int64_t song_frame_at(int64_t clock) const;
 
 	// Starts the song at `seconds`, `lead` seconds from the clock's last block: far enough ahead

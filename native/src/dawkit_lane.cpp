@@ -134,7 +134,7 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 	const int64_t hold = lane->get_held() ? t->get_hold_frame() : -1;
 	for (int32_t i = 0; i < frames; i++) {
 		int64_t song = t->song_frame_at(block + i);
-		if (song < 0 || song < hold) {
+		if (song == DawKitTransport::NOT_PLAYING || (hold >= 0 && song < hold)) {
 			continue;
 		}
 		float l = 0.0f, r = 0.0f;
