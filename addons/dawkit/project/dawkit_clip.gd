@@ -20,6 +20,10 @@ var gain_db := 0.0
 var source := ""
 ## Seconds into the file at the clip's left edge: not zero once a clip has been split or trimmed.
 var source_offset := 0.0
+## A looped clip plays the file between these two points over and over, for as long as the clip
+## lasts; seconds into the file. Not looped when loop_end is not after loop_start.
+var loop_start := 0.0
+var loop_end := 0.0
 ## A MIDI clip's notes, flat: [on, off, pitch, velocity, channel] repeating, seconds from the
 ## clip's left edge, so moving the clip moves its notes.
 var notes := PackedFloat64Array()
@@ -29,6 +33,18 @@ const NOTE_WIDTH := 5
 
 func end() -> float:
 	return start + length
+
+
+func is_looped() -> bool:
+	return loop_end > loop_start
+
+
+## Seconds into the file that sound `t` seconds after the clip's start.
+func file_time(t: float) -> float:
+	var at := source_offset + t
+	if is_looped() and at >= loop_end:
+		at = loop_start + fposmod(at - loop_start, loop_end - loop_start)
+	return at
 
 
 func is_midi() -> bool:
@@ -43,6 +59,7 @@ func to_dict() -> Dictionary:
 	return {"start": start, "length": length, "name": name, "muted": muted,
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
 			"gain_db": gain_db, "source": source, "source_offset": source_offset,
+			"loop_start": loop_start, "loop_end": loop_end,
 			"notes": Array(notes)}
 
 
@@ -58,5 +75,7 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.gain_db = float(d.get("gain_db", 0.0))
 	c.source = str(d.get("source", ""))
 	c.source_offset = float(d.get("source_offset", 0.0))
+	c.loop_start = float(d.get("loop_start", 0.0))
+	c.loop_end = float(d.get("loop_end", 0.0))
 	c.notes = PackedFloat64Array(d.get("notes", []))
 	return c

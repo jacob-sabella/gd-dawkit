@@ -10,6 +10,7 @@ func _initialize() -> void:
 	_test_a_project_survives_its_plain_form()
 	_test_every_field_is_in_the_plain_form()
 	_test_a_difference_is_found_and_named()
+	_test_a_looped_clip_plays_its_loop()
 	_test_folders_route_to_their_parent()
 	_test_broken_references_are_reported()
 	_test_a_project_survives_a_dawproject_file()
@@ -91,6 +92,14 @@ static func sample() -> DawKitProject:
 	take.gain_db = 2.5
 	take.muted = true
 	kick.clips.append(take)
+	var loop := DawKitClip.new()
+	loop.start = 20.0
+	loop.length = 12.0
+	loop.source = "audio/take1.wav"
+	loop.loop_start = 0.0
+	loop.loop_end = 2.0
+	loop.source_offset = 0.5
+	kick.clips.append(loop)
 	return p
 
 
@@ -137,6 +146,18 @@ func _test_a_difference_is_found_and_named() -> void:
 	var said := a.first_difference(b)
 	check("one changed fade is a difference (%s)" % said, not a.same_as(b))
 	check("and is named by where it is", said.begins_with("tracks[1].clips[0].fade_out"))
+
+
+func _test_a_looped_clip_plays_its_loop() -> void:
+	var c := DawKitClip.new()
+	c.length = 10.0
+	c.source_offset = 0.5
+	c.loop_end = 2.0
+	check("a looped clip is looped", c.is_looped())
+	check("it starts where its offset says", c.file_time(0.0) == 0.5)
+	check("and comes round to the loop's start", is_equal_approx(c.file_time(1.5), 0.0) and is_equal_approx(c.file_time(2.25), 0.75))
+	c.loop_end = 0.0
+	check("an unlooped clip runs on through the file", c.file_time(3.0) == 3.5)
 
 
 func _test_folders_route_to_their_parent() -> void:

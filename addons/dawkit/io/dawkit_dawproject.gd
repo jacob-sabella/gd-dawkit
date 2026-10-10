@@ -188,6 +188,9 @@ class _Writer:
 				"enable": DawKitXml.flag(not c.muted), "name": c.name})
 		if c.colour.a > 0.0:
 			x.attrs["color"] = "#" + c.colour.to_html(false)
+		if c.is_looped():
+			x.attrs["loopStart"] = DawKitXml.num(c.loop_start)
+			x.attrs["loopEnd"] = DawKitXml.num(c.loop_end)
 		if not c.source.is_empty():
 			var info := _media(c.source)
 			var audio := x.add("Audio", {"channels": str(info.get("channels", 2)),
@@ -499,6 +502,9 @@ class _Reader:
 		c.muted = not cx.get_bool("enable", true)
 		var content_unit := cx.get_attr("contentTimeUnit", unit)
 		c.source_offset = _seconds(cx.get_float("playStart"), content_unit)
+		if cx.attrs.has("loopStart") and cx.attrs.has("loopEnd"):
+			c.loop_start = _seconds(cx.get_float("loopStart"), content_unit)
+			c.loop_end = _seconds(cx.get_float("loopEnd"), content_unit)
 		var fade_unit := cx.get_attr("fadeTimeUnit", unit)
 		c.fade_in = _seconds(cx.get_float("fadeInTime"), fade_unit)
 		c.fade_out = _seconds(cx.get_float("fadeOutTime"), fade_unit)
