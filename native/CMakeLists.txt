@@ -18,6 +18,12 @@ set_target_properties(dawkit PROPERTIES
     OUTPUT_NAME "dawkit.${CMAKE_SYSTEM_NAME}.${GODOTCPP_TARGET}"
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../addons/dawkit/bin"
+    # A Windows DLL is a runtime output, not a library one.
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../addons/dawkit/bin"
 )
+if(MINGW)
+    # The C++ runtime inside the DLL, so it needs nothing beside it on a player's machine.
+    target_link_options(dawkit PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 string(TOLOWER "${CMAKE_SYSTEM_NAME}" DAWKIT_SYSTEM)
 set_target_properties(dawkit PROPERTIES OUTPUT_NAME "dawkit.${DAWKIT_SYSTEM}.${GODOTCPP_TARGET}")
