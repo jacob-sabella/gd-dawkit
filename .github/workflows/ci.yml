@@ -1,0 +1,66 @@
+name: CI
+
+# dawkit's own checks, headless, on every push to main and every pull request: the native core
+# (cached on its sources and godot-cpp's pin), then tools/test.sh.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  test:
+    # Skip fork PRs; internal pushes, PRs and manual runs proceed.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Compilers
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q cmake g++ pkg-config
+
+      - name: Cache Godot
+        uses: actions/cache@v6
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}
+
+      - name: Godot
+        run: |
+          if [ ! -x ~/godot-bin/godot ]; then
+            base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+            curl -sSLo godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+            unzip -q godot.zip
+            mkdir -p ~/godot-bin
+            mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" ~/godot-bin/godot
+            rm -f godot.zip
+          fi
+          sudo ln -sf ~/godot-bin/godot /usr/local/bin/godot
+
+      - name: Cache the native core
+        uses: actions/cache@v6
+        with:
+          path: |
+            native/build
+            native/extension_api.json
+          key: dawkit-native-${{ hashFiles('native/**/*.cpp', 'native/**/*.h', 'native/CMakeLists.txt', 'tools/build_native.sh') }}-${{ hashFiles('.gitmodules') }}
+          restore-keys: dawkit-native-
+
+      - name: Tests
+        run: tools/test.sh
