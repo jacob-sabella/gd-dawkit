@@ -97,6 +97,12 @@ metronome, the project's length, clip gain, record arm, monitor mode, effect wet
 names, and sidechain keys (which DAWproject cannot express, so they are left out of the XML rather
 than written as ordinary sends).
 
+## Vibe Coded
+
+This entire project was vibe coded with [Claude Code](https://claude.ai/code). The project model,
+the mixer and transport, DAWproject import and export, the native core and the tests — all of it.
+No hand-written code.
+
 ## Licence
 
 Proprietary. See LICENSE.
