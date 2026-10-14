@@ -66,6 +66,7 @@ static func sample() -> DawKitProject:
 	var chorus := DawKitMarker.new(41.3, "Chorus")
 	chorus.colour = Color(0.9, 0.4, 0.2)
 	p.markers.append(chorus)
+	p.regions.append(DawKitRegion.new(41.3, 60.75, "Chorus 1"))
 	p.master.volume_db = -1.5
 	var drums := p.add_track("Drums")
 	drums.colour = Color(0.78, 0.40, 0.32)
@@ -171,6 +172,8 @@ func _test_every_field_is_in_the_plain_form() -> void:
 	check("sends by id, pre-fader", back.track("t3").sends[0].target == "t4" and back.track("t3").sends[0].pre_fader)
 	check("time signature, loop, markers", back.time_signature == Vector2i(6, 8) and back.loop_on
 			and back.markers.size() == 2 and back.markers[1].name == "Chorus")
+	check("regions", back.regions.size() == 1 and back.regions[0].name == "Chorus 1"
+			and back.regions[0].start == 41.3 and back.regions[0].end == 60.75)
 	check("the master is a track", back.master.id == "master" and back.master.volume_db == -1.5)
 
 

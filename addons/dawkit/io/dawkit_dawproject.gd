@@ -187,6 +187,9 @@ class _Writer:
 				if m.colour.a > 0.0:
 					mx.attrs["color"] = "#" + m.colour.to_html(false)
 			extras["markers"] = p.markers.map(func(m): return m.to_dict())
+		# DAWproject has no regions: they ride in the extras, and a file from elsewhere has none.
+		if not p.regions.is_empty():
+			extras["regions"] = p.regions.map(func(r): return r.to_dict())
 		if not p.tempo_points.is_empty():
 			var tempo := arr.add("TempoAutomation", {"timeUnit": "beats", "unit": "bpm", "id": "tempo-map"})
 			tempo.add("Target", {"parameter": "tempo"})
@@ -694,6 +697,9 @@ class _Reader:
 						marker = ex
 				_p.markers.append(marker)
 				i += 1
+		for r in extras.get("regions", []):
+			if r is Dictionary:
+				_p.regions.append(DawKitRegion.from_dict(r))
 		var scenes := root.first("Scenes")
 		if scenes != null and not scenes.children.is_empty():
 			warnings.append("its %d scene(s) were left out: scenes and clip launchers are not kept" % scenes.all("Scene").size())

@@ -30,6 +30,8 @@ var loop_on := false
 var loop_start := 0.0
 var loop_end := 0.0
 var markers: Array[DawKitMarker] = []
+## Named spans, in order of their starts.
+var regions: Array[DawKitRegion] = []
 var master := DawKitTrack.new(MASTER_ID, "Master")
 var tracks: Array[DawKitTrack] = []
 
@@ -159,6 +161,7 @@ func to_dict() -> Dictionary:
 			"metronome": metronome,
 			"loop": {"on": loop_on, "start": loop_start, "end": loop_end},
 			"markers": markers.map(func(m): return m.to_dict()),
+			"regions": regions.map(func(r): return r.to_dict()),
 			"master": master.to_dict(),
 			"tracks": tracks.map(func(t): return t.to_dict())}
 
@@ -181,6 +184,8 @@ static func from_dict(d: Dictionary) -> DawKitProject:
 	p.loop_end = float(loop.get("end", 0.0))
 	for m in d.get("markers", []):
 		p.markers.append(DawKitMarker.from_dict(m))
+	for r in d.get("regions", []):
+		p.regions.append(DawKitRegion.from_dict(r))
 	if d.has("master"):
 		p.master = DawKitTrack.from_dict(d["master"])
 		p.master.id = MASTER_ID
