@@ -122,6 +122,7 @@ static func sample() -> DawKitProject:
 	take.reversed = true
 	take.locked = true
 	take.fade_shape = DawKitClip.FADE_EQUAL_POWER
+	take.fade_out_shape = DawKitClip.FADE_S_CURVE
 	kick.clips.append(take)
 	var loop := DawKitClip.new()
 	loop.start = 20.0
@@ -168,7 +169,15 @@ func _test_every_field_is_in_the_plain_form() -> void:
 	check("an audio clip keeps its file, offset, fades and gain", take.source == "audio/take1.wav"
 			and take.source_offset == 0.75 and take.fade_in == 0.01 and take.fade_out == 0.25
 			and take.gain_db == 2.5 and take.muted and take.reversed and take.locked
-			and take.fade_shape == DawKitClip.FADE_EQUAL_POWER)
+			and take.fade_shape == DawKitClip.FADE_EQUAL_POWER and take.fade_out_shape == DawKitClip.FADE_S_CURVE)
+	check("a clip written with one shape has it at both ends",
+			DawKitClip.from_dict({"fade_shape": 1}).fade_out_shape == DawKitClip.FADE_EQUAL_POWER
+			and DawKitClip.from_dict({"fade_shape": 9}).fade_shape == DawKitClip.FADE_LINEAR)
+	check("the shapes, halfway", is_equal_approx(DawKitClip.fade_gain(0.5, DawKitClip.FADE_SLOW), 0.25)
+			and is_equal_approx(DawKitClip.fade_gain(0.5, DawKitClip.FADE_FAST), 0.75)
+			and is_equal_approx(DawKitClip.fade_gain(0.5, DawKitClip.FADE_S_CURVE), 0.5)
+			and is_equal_approx(DawKitClip.fade_gain(0.25, DawKitClip.FADE_S_CURVE), 0.5 - 0.5 * cos(PI / 4.0))
+			and is_equal_approx(DawKitClip.fade_gain(0.5, DawKitClip.FADE_LINEAR), 0.5))
 	var chords := back.track("t3").clips[0]
 	check("a MIDI clip keeps its notes (%d)" % chords.note_count(),
 			chords.is_midi() and chords.note_count() == 2 and chords.notes[7] == 64.0)
@@ -720,7 +729,7 @@ func _test_lanes_play_on_the_same_sample() -> void:
 	dc.fill(1.0)
 	t.stop()
 	var f = lane.call([{"id": 2, "samples": dc, "channels": 1, "rate": 48000, "start": 0.0, "length": 1.0,
-			"gain": 0.5, "fade_in": 0.1, "fade_out": 0.1, "fade_shape": 1}])
+			"gain": 0.5, "fade_in": 0.1, "fade_out": 0.1, "fade_shape": 1, "fade_out_shape": 2}])
 	var base_f: int = t.get_clock()
 	var pf = f.instantiate_playback()
 	t.play_from(0.0, 0.0)
@@ -733,6 +742,7 @@ func _test_lanes_play_on_the_same_sample() -> void:
 	close("halfway through an equal-power fade it is at sin(45 deg)", faded[at0 + 2400].x, 0.5 * sin(PI / 4.0), 0.0005)
 	close("past it, the gain", faded[at0 + 24000].x, 0.5, 0.0001)
 	close("the fade out ends at nothing", faded[at0 + 47999].x, 0.0, 0.0001)
+	close("and is its own shape: slow, a square, halfway through it", faded[at0 + 47999 - 2400].x, 0.5 * 0.25, 0.0005)
 	check("mono plays on both sides", is_equal_approx(faded[at0 + 24000].x, faded[at0 + 24000].y))
 
 	# A sound at another rate plays at its own speed; a clip's offset and the transport's loop.

@@ -75,6 +75,7 @@ void DawKitLane::set_clips(const Array &given) {
 		c.fade_in = (int64_t)std::llround((double)d.get("fade_in", 0.0) * rate);
 		c.fade_out = (int64_t)std::llround((double)d.get("fade_out", 0.0) * rate);
 		c.fade_shape = d.get("fade_shape", 0);
+		c.fade_out_shape = d.get("fade_out_shape", c.fade_shape);
 		c.loop_start = d.get("loop_start", 0.0);
 		c.loop_end = d.get("loop_end", 0.0);
 		if (c.length > 0 && sound->frames > 0) {
@@ -113,7 +114,19 @@ void DawKitLane::_bind_methods() {
 // How loud a fade is `t` (0-1) of the way in.
 static inline float fade_gain(double t, int shape) {
 	t = std::clamp(t, 0.0, 1.0);
-	return shape == 1 ? (float)std::sin(t * 1.5707963267948966) : (float)t;
+	// DawKitClip.fade_gain's shapes, in the same order.
+	switch (shape) {
+		case 1:
+			return (float)std::sin(t * 1.5707963267948966);
+		case 2:
+			return (float)(t * t);
+		case 3:
+			return (float)(1.0 - (1.0 - t) * (1.0 - t));
+		case 4:
+			return (float)(0.5 - 0.5 * std::cos(t * 3.141592653589793));
+		default:
+			return (float)t;
+	}
 }
 
 int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t frames) {
@@ -159,15 +172,15 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 			float gl = s.samples[f0 * 2] + (float)frac * (s.samples[f1 * 2] - s.samples[f0 * 2]);
 			float gr = s.samples[f0 * 2 + 1] + (float)frac * (s.samples[f1 * 2 + 1] - s.samples[f0 * 2 + 1]);
 			// The lower of the two fades, as an item's level is: a short item's fades cross.
-			double through = 1.0;
+			float shaped = 1.0f;
 			if (c.fade_in > 0 && into < c.fade_in) {
-				through = std::min(through, (double)into / c.fade_in);
+				shaped = std::min(shaped, fade_gain((double)into / c.fade_in, c.fade_shape));
 			}
 			int64_t left = c.length - into;
 			if (c.fade_out > 0 && left <= c.fade_out) {
-				through = std::min(through, (double)(left - 1) / c.fade_out);
+				shaped = std::min(shaped, fade_gain((double)(left - 1) / c.fade_out, c.fade_out_shape));
 			}
-			float g = c.gain * (through < 1.0 ? fade_gain(through, c.fade_shape) : 1.0f);
+			float g = c.gain * shaped;
 			l += gl * g;
 			r += gr * g;
 		}

@@ -32,7 +32,8 @@ public:
 		float gain = 1.0f;
 		int64_t fade_in = 0; // song frames
 		int64_t fade_out = 0;
-		int fade_shape = 0; // 0 linear, 1 equal power
+		int fade_shape = 0; // the fade in's: DawKitClip's FADE_ shapes, 0 linear .. 4 S-curve
+		int fade_out_shape = 0;
 		double loop_start = 0.0; // seconds of the sound looped, both 0 for none
 		double loop_end = 0.0;
 	};
@@ -42,7 +43,7 @@ public:
 	Ref<DawKitTransport> get_transport() const { return transport; }
 	// The clips, replacing the last: each {id, samples (PackedFloat32Array), channels, rate,
 	// start, length, offset (seconds), gain (linear), fade_in, fade_out (seconds), fade_shape,
-	// loop_start, loop_end}. A sound already given under the same id is not copied again.
+	// fade_out_shape (fade_shape when not given), loop_start, loop_end}. A sound already given under the same id is not copied again.
 	void set_clips(const Array &clips);
 	int clip_count() const;
 	// Whether the transport's hold (a count-in) silences this lane. The click is not held.

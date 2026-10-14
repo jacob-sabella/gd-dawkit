@@ -17,14 +17,26 @@ var locked := false
 ## and length mean the same whichever way it plays.
 var reversed := false
 var colour := Color(0, 0, 0, 0)
-## Fade lengths at each end, in seconds, both in `fade_shape`.
+## Fade lengths at each end, in seconds: the fade in in `fade_shape`, the fade out in
+## `fade_out_shape`.
 var fade_in := 0.0
 var fade_out := 0.0
-## How both fades run: FADE_LINEAR, straight in amplitude, or FADE_EQUAL_POWER, a quarter sine,
-## so two crossfading clips of unrelated sound keep their loudness through the middle.
+## How the fade in runs, one of the FADE_ shapes below (see fade_gain).
 var fade_shape := FADE_LINEAR
+## How the fade out runs: the same shapes, mirrored, so a shape sounds the same from either end.
+var fade_out_shape := FADE_LINEAR
+## Straight in amplitude.
 const FADE_LINEAR := 0
+## A quarter sine: two crossfading clips of unrelated sound keep their loudness through the middle.
 const FADE_EQUAL_POWER := 1
+## Slow to start and quick to finish (a square): a fade in that stays low, a fade out that
+## lets go late.
+const FADE_SLOW := 2
+## Quick to start and slow to finish (an upturned square).
+const FADE_FAST := 3
+## Slow at both ends and quick through the middle (half a cosine).
+const FADE_S_CURVE := 4
+const FADE_SHAPES := 5
 var gain_db := 0.0
 ## An audio clip's file, as a path relative to the project's media folder. Empty for MIDI.
 var source := ""
@@ -65,10 +77,34 @@ func note_count() -> int:
 	return notes.size() / NOTE_WIDTH
 
 
+## The level, 0-1, `t` of the way through a fade in of `shape` (a fade out is the same curve
+## run backwards: `t` is how much of it is still to go).
+static func fade_gain(t: float, shape: int) -> float:
+	t = clampf(t, 0.0, 1.0)
+	match shape:
+		FADE_EQUAL_POWER:
+			return sin(t * PI * 0.5)
+		FADE_SLOW:
+			return t * t
+		FADE_FAST:
+			return 1.0 - (1.0 - t) * (1.0 - t)
+		FADE_S_CURVE:
+			return 0.5 - 0.5 * cos(t * PI)
+	return t
+
+
+## A shape from a file or a peer: one of the FADE_ shapes, straight for anything else.
+static func clean_shape(v: Variant) -> int:
+	if typeof(v) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(v)):
+		return FADE_LINEAR
+	var shape := int(v)
+	return shape if shape >= 0 and shape < FADE_SHAPES else FADE_LINEAR
+
+
 func to_dict() -> Dictionary:
 	return {"start": start, "length": length, "name": name, "muted": muted, "locked": locked, "reversed": reversed,
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
-			"fade_shape": fade_shape, "gain_db": gain_db, "source": source, "source_offset": source_offset,
+			"fade_shape": fade_shape, "fade_out_shape": fade_out_shape, "gain_db": gain_db, "source": source, "source_offset": source_offset,
 			"loop_start": loop_start, "loop_end": loop_end,
 			"notes": Array(notes)}
 
@@ -84,7 +120,9 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.colour = Color.from_string(str(d.get("colour", "00000000")), Color(0, 0, 0, 0))
 	c.fade_in = float(d.get("fade_in", 0.0))
 	c.fade_out = float(d.get("fade_out", 0.0))
-	c.fade_shape = FADE_EQUAL_POWER if int(d.get("fade_shape", FADE_LINEAR)) == FADE_EQUAL_POWER else FADE_LINEAR
+	c.fade_shape = clean_shape(d.get("fade_shape", FADE_LINEAR))
+	# Written before each end had its own, the one shape was both.
+	c.fade_out_shape = clean_shape(d.get("fade_out_shape", c.fade_shape))
 	c.gain_db = float(d.get("gain_db", 0.0))
 	c.source = str(d.get("source", ""))
 	c.source_offset = float(d.get("source_offset", 0.0))
