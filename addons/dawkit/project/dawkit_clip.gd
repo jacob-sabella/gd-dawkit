@@ -11,6 +11,8 @@ var start := 0.0
 var length := 0.0
 var name := ""
 var muted := false
+## Pinned against edits: a host refuses to move, trim or reshape it until it is unlocked.
+var locked := false
 var colour := Color(0, 0, 0, 0)
 ## Linear fade lengths at each end, in seconds.
 var fade_in := 0.0
@@ -56,7 +58,7 @@ func note_count() -> int:
 
 
 func to_dict() -> Dictionary:
-	return {"start": start, "length": length, "name": name, "muted": muted,
+	return {"start": start, "length": length, "name": name, "muted": muted, "locked": locked,
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
 			"gain_db": gain_db, "source": source, "source_offset": source_offset,
 			"loop_start": loop_start, "loop_end": loop_end,
@@ -69,6 +71,7 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.length = float(d.get("length", 0.0))
 	c.name = str(d.get("name", ""))
 	c.muted = bool(d.get("muted", false))
+	c.locked = bool(d.get("locked", false))
 	c.colour = Color.from_string(str(d.get("colour", "00000000")), Color(0, 0, 0, 0))
 	c.fade_in = float(d.get("fade_in", 0.0))
 	c.fade_out = float(d.get("fade_out", 0.0))
