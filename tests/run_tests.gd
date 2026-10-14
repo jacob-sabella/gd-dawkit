@@ -20,6 +20,7 @@ func _initialize() -> void:
 	_test_odd_names_survive_the_xml()
 	_test_every_kind_of_wav_reads_the_same()
 	_test_aiff_reads_the_same()
+	_test_a_wav_is_written_at_its_depth()
 	_test_more_channels_fold_to_stereo()
 	_test_a_file_is_brought_in_as_the_engine_plays_it()
 	_test_ogg_and_mp3_are_decoded()
@@ -504,6 +505,38 @@ func _test_every_kind_of_wav_reads_the_same() -> void:
 	var mono := _tone(100, 1, 22050)
 	var got := DawKitAudioFile.read(_write("mono.wav", _wav(mono, 1, 22050, 16, false, false)))
 	check("a mono WAV stays mono, at its own rate", got["channels"] == 1 and got["rate"] == 22050 and got["frames"] == 100)
+
+
+func _test_a_wav_is_written_at_its_depth() -> void:
+	var tone := _tone(4410, 2, 44100)
+	for spec in [[16, 1.0 / 32768.0], [24, 1.0 / 8388608.0], [32, 0.0]]:
+		var path := _tmp("written%d.wav" % spec[0])
+		check("a %d-bit WAV is written" % spec[0], DawKitAudioFile.write_wav(path, tone, 2, 44100, spec[0]) == OK)
+		var bytes := FileAccess.get_file_as_bytes(path)
+		check("at %d bits, %s" % [spec[0], "float" if spec[0] == 32 else "integer"],
+				bytes.decode_u16(34) == spec[0] and bytes.decode_u16(20) == (3 if spec[0] == 32 else 1))
+		var got := DawKitAudioFile.read(path)
+		var worst := _worst(got["samples"], tone)
+		# Dither and rounding: at most two steps off.
+		check("and reads back as the same sound (%d-bit: off by %.9f)" % [spec[0], worst],
+				got["error"] == "" and got["frames"] == 4410 and worst <= spec[1] * 2.0 + 1e-7)
+	var quiet := PackedFloat32Array()
+	quiet.resize(2000)
+	quiet.fill(0.25 / 32768.0)
+	var path := _tmp("dither.wav")
+	DawKitAudioFile.write_wav(path, quiet, 1, 44100, 16)
+	var got: PackedFloat32Array = DawKitAudioFile.read(path)["samples"]
+	var mean := 0.0
+	var distinct := {}
+	for v in got:
+		mean += v
+		distinct[v] = true
+	mean /= got.size()
+	check("a level under one step is dithered, not rounded away (mean %.3f steps, %d values)" % [mean * 32768.0, distinct.size()],
+			distinct.size() > 1 and absf(mean * 32768.0 - 0.25) < 0.1)
+	DawKitAudioFile.write_wav(_tmp("again.wav"), quiet, 1, 44100, 16)
+	check("and the same sound writes the same file", FileAccess.get_file_as_bytes(path)
+			== FileAccess.get_file_as_bytes(_tmp("again.wav")))
 
 
 func _test_aiff_reads_the_same() -> void:

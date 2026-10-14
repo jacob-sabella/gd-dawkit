@@ -69,8 +69,18 @@ static func bring_in(source: String, dest: String) -> Dictionary:
 	}
 
 
-## A 32-bit float WAV, with the 18-byte format chunk and the fact chunk that float WAVs carry.
-static func write_wav(path: String, samples: PackedFloat32Array, channels: int, rate: int) -> Error:
+## The bit depths `write_wav` writes: 16- and 24-bit integer, and 32-bit float.
+const WRITE_BITS: Array[int] = [16, 24, 32]
+
+
+## A WAV of `bits`: 32 is float, with the 18-byte format chunk and the fact chunk that float WAVs
+## carry; 16 and 24 are integer, dithered -- triangular noise of one step either way added before
+## rounding, so a fade's last bits fall into a little hiss rather than a buzz of rounding steps.
+## Its own seeded noise, so the same sound writes the same file. Anything else is written as 32.
+static func write_wav(path: String, samples: PackedFloat32Array, channels: int, rate: int,
+		bits := 32) -> Error:
+	if bits == 16 or bits == 24:
+		return _write_pcm(path, samples, channels, rate, bits)
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
@@ -90,6 +100,44 @@ static func write_wav(path: String, samples: PackedFloat32Array, channels: int, 
 	f.store_buffer("fact".to_ascii_buffer())
 	f.store_32(4)
 	f.store_32(frames)
+	f.store_buffer("data".to_ascii_buffer())
+	f.store_32(data.size())
+	f.store_buffer(data)
+	f.close()
+	return OK
+
+
+static func _write_pcm(path: String, samples: PackedFloat32Array, channels: int, rate: int,
+		bits: int) -> Error:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return FileAccess.get_open_error()
+	var width := bits / 8
+	var top := float((1 << (bits - 1)) - 1)
+	var low := -(1 << (bits - 1))
+	var noise := RandomNumberGenerator.new()
+	noise.seed = 0x5EED
+	var data := PackedByteArray()
+	data.resize(samples.size() * width)
+	for i in samples.size():
+		var v := clampi(int(roundf(clampf(samples[i], -1.0, 1.0) * top + noise.randf() - noise.randf())),
+				low, int(top))
+		if width == 2:
+			data.encode_s16(i * 2, v)
+		else:
+			data[i * 3] = v & 0xFF
+			data[i * 3 + 1] = (v >> 8) & 0xFF
+			data[i * 3 + 2] = (v >> 16) & 0xFF
+	f.store_buffer("RIFF".to_ascii_buffer())
+	f.store_32(4 + (8 + 16) + 8 + data.size())
+	f.store_buffer("WAVEfmt ".to_ascii_buffer())
+	f.store_32(16)
+	f.store_16(_FORMAT_PCM)
+	f.store_16(channels)
+	f.store_32(rate)
+	f.store_32(rate * channels * width)
+	f.store_16(channels * width)
+	f.store_16(bits)
 	f.store_buffer("data".to_ascii_buffer())
 	f.store_32(data.size())
 	f.store_buffer(data)
