@@ -25,6 +25,10 @@ var monitor := Monitor.OFF
 ## Empty for whatever is chosen when recording. Kept as it is, not read: a project carries it
 ## from one session to the next.
 var input := ""
+## The group it is in, 1 and up, or 0 for none: tracks of one group move together -- their
+## faders by the same decibels, their mutes and solos as one -- the way Reaper's track groups and
+## a desk's linked channels do. Kept, not acted on here: a front end does the linking.
+var group := 0
 var effects: Array[DawKitEffect] = []
 var sends: Array[DawKitSend] = []
 var clips: Array[DawKitClip] = []
@@ -40,7 +44,7 @@ func _init(with_id := "", called := "") -> void:
 func to_dict() -> Dictionary:
 	return {"id": id, "name": name, "colour": colour.to_html(true), "parent": parent,
 			"volume_db": volume_db, "pan": pan, "mute": mute, "solo": solo, "armed": armed,
-			"monitor": monitor, "input": input, "effects": effects.map(func(e): return e.to_dict()),
+			"monitor": monitor, "input": input, "group": group, "effects": effects.map(func(e): return e.to_dict()),
 			"sends": sends.map(func(s): return s.to_dict()),
 			"clips": clips.map(func(c): return c.to_dict()),
 			"automation": automation.map(func(a): return a.to_dict())}
@@ -57,6 +61,7 @@ static func from_dict(d: Dictionary) -> DawKitTrack:
 	t.armed = bool(d.get("armed", false))
 	t.monitor = clampi(int(d.get("monitor", 0)), 0, 2) as Monitor
 	t.input = str(d.get("input", ""))
+	t.group = maxi(int(d.get("group", 0)), 0)
 	for e in d.get("effects", []):
 		t.effects.append(DawKitEffect.from_dict(e))
 	for s in d.get("sends", []):
