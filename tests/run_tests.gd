@@ -121,6 +121,7 @@ static func sample() -> DawKitProject:
 	take.muted = true
 	take.reversed = true
 	take.locked = true
+	take.fade_shape = DawKitClip.FADE_EQUAL_POWER
 	kick.clips.append(take)
 	var loop := DawKitClip.new()
 	loop.start = 20.0
@@ -166,7 +167,8 @@ func _test_every_field_is_in_the_plain_form() -> void:
 	var take := kick.clips[0]
 	check("an audio clip keeps its file, offset, fades and gain", take.source == "audio/take1.wav"
 			and take.source_offset == 0.75 and take.fade_in == 0.01 and take.fade_out == 0.25
-			and take.gain_db == 2.5 and take.muted and take.reversed and take.locked)
+			and take.gain_db == 2.5 and take.muted and take.reversed and take.locked
+			and take.fade_shape == DawKitClip.FADE_EQUAL_POWER)
 	var chords := back.track("t3").clips[0]
 	check("a MIDI clip keeps its notes (%d)" % chords.note_count(),
 			chords.is_midi() and chords.note_count() == 2 and chords.notes[7] == 64.0)

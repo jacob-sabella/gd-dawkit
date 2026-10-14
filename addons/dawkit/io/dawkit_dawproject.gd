@@ -179,7 +179,7 @@ class _Writer:
 				_clip(clips, t, c)
 				shapes.append({"gain_db": c.gain_db, "colour": [c.colour.r, c.colour.g, c.colour.b, c.colour.a],
 						"start": c.start, "length": c.length, "notes": Array(c.notes),
-						"locked": c.locked, "reversed": c.reversed})
+						"locked": c.locked, "reversed": c.reversed, "fade_shape": c.fade_shape})
 			extras["tracks"][t.id]["clips"] = shapes
 		if not p.markers.is_empty():
 			var markers := arr.add("Markers", {"timeUnit": "seconds", "id": "markers"})
@@ -675,9 +675,11 @@ class _Reader:
 				# added says nothing here about any of them.
 				if absf(float(sh.get("start", -1)) - c.start) < AGREE and absf(float(sh.get("length", -1)) - c.length) < AGREE:
 					c.gain_db = float(sh.get("gain_db", 0.0))
-					# Neither is in DAWproject.
+					# None of these is in DAWproject.
 					c.locked = bool(sh.get("locked", false))
 					c.reversed = bool(sh.get("reversed", false))
+					c.fade_shape = DawKitClip.FADE_EQUAL_POWER if int(sh.get("fade_shape", 0)) == DawKitClip.FADE_EQUAL_POWER \
+							else DawKitClip.FADE_LINEAR
 					var col: Array = sh.get("colour", [])
 					if col.size() == 4 and (c.colour.a == 0.0 or _close_colour(c.colour, col)):
 						c.colour = Color(col[0], col[1], col[2], col[3])

@@ -17,9 +17,14 @@ var locked := false
 ## and length mean the same whichever way it plays.
 var reversed := false
 var colour := Color(0, 0, 0, 0)
-## Linear fade lengths at each end, in seconds.
+## Fade lengths at each end, in seconds, both in `fade_shape`.
 var fade_in := 0.0
 var fade_out := 0.0
+## How both fades run: FADE_LINEAR, straight in amplitude, or FADE_EQUAL_POWER, a quarter sine,
+## so two crossfading clips of unrelated sound keep their loudness through the middle.
+var fade_shape := FADE_LINEAR
+const FADE_LINEAR := 0
+const FADE_EQUAL_POWER := 1
 var gain_db := 0.0
 ## An audio clip's file, as a path relative to the project's media folder. Empty for MIDI.
 var source := ""
@@ -63,7 +68,7 @@ func note_count() -> int:
 func to_dict() -> Dictionary:
 	return {"start": start, "length": length, "name": name, "muted": muted, "locked": locked, "reversed": reversed,
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
-			"gain_db": gain_db, "source": source, "source_offset": source_offset,
+			"fade_shape": fade_shape, "gain_db": gain_db, "source": source, "source_offset": source_offset,
 			"loop_start": loop_start, "loop_end": loop_end,
 			"notes": Array(notes)}
 
@@ -79,6 +84,7 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.colour = Color.from_string(str(d.get("colour", "00000000")), Color(0, 0, 0, 0))
 	c.fade_in = float(d.get("fade_in", 0.0))
 	c.fade_out = float(d.get("fade_out", 0.0))
+	c.fade_shape = FADE_EQUAL_POWER if int(d.get("fade_shape", FADE_LINEAR)) == FADE_EQUAL_POWER else FADE_LINEAR
 	c.gain_db = float(d.get("gain_db", 0.0))
 	c.source = str(d.get("source", ""))
 	c.source_offset = float(d.get("source_offset", 0.0))
