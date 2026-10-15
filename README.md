@@ -4,8 +4,9 @@ A DAW engine that runs inside Godot: a project model (tracks, folders, sends, ef
 markers, tempo), a mixer and transport on Godot's own `AudioServer`, and project files in
 **DAWproject**, the open interchange format that Bitwig, Studio One and Cubase read and write.
 
-It has no user interface of its own. A host application (a game, a 3D studio, an app) draws
-whatever it likes and drives the engine through its API. dawlings (a 3D studio game) is the first host.
+It needs Godot 4.7 or later. It has no user interface of its own. A host application (a game, a 3D
+studio, an app) draws whatever it likes and drives the engine through its API. dawlings (a 3D
+studio game) is the first host.
 
 ## Layout
 
@@ -15,6 +16,7 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
                             audio files people bring (DawKitAudioFile)
       engine/               the click (DawKitMetronome) and the built-in instrument (DawKitTine)
     native/                 the native core (GDExtension): lanes, transport, plugin hosting
+      third_party/          the plugin formats' interface headers (see THIRD_PARTY_NOTICES.md)
     tests/                  the engine's own checks, run headless
     tools/test.sh           runs them
 
