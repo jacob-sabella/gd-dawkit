@@ -4,6 +4,7 @@
 //   dawkit_scan VST3 <bundle.vst3>
 //   dawkit_scan LV2                       every LV2 plugin installed (LV2_PATH, or the usual places)
 //   dawkit_scan files <FORMAT> [dir...]   the plugin files under `dir`s (the usual places if none)
+//   dawkit_scan --out <file> ...          the answer written to `file` instead of stdout
 //
 // Prints a JSON array on stdout: one object per plugin, {format, id, name, vendor, version, path,
 // category, instrument, has_editor}, or one string per file for `files`. A plugin's own chatter
@@ -15,10 +16,16 @@
 #include "hosted_plugin.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <io.h>
+#define dup _dup
+#define dup2 _dup2
+#define fdopen _fdopen
+#else
 #include <unistd.h>
 #endif
 
@@ -55,17 +62,21 @@ static std::string json(const PluginInfo &p) {
 
 int main(int argc, char **argv) {
 	set_main_thread();
+	const char *out_path = nullptr;
+	if (argc >= 3 && std::string(argv[1]) == "--out") {
+		out_path = argv[2];
+		argv += 2;
+		argc -= 2;
+	}
 	if (argc < 2) {
 		std::fprintf(stderr, "usage: dawkit_scan CLAP|VST3 <path> | LV2 | files <FORMAT> [dir...]\n");
 		return 1;
 	}
 	// Plugins print as they load; only the answer goes where the answer is read.
-	FILE *answer = stdout;
-#ifndef _WIN32
+	std::fflush(stdout);
 	int kept = dup(1);
 	dup2(2, 1);
-	answer = fdopen(kept, "w");
-#endif
+	FILE *answer = fdopen(kept, "w");
 	std::string what = argv[1];
 	std::string out = "[";
 	std::string problem;
@@ -102,12 +113,22 @@ int main(int argc, char **argv) {
 		}
 	}
 	out += "]\n";
-	std::fputs(out.c_str(), answer);
-	std::fflush(answer);
+	if (out_path) {
+		// Whole or not at all: whoever reads it may be watching for it to appear.
+		std::string partial = std::string(out_path) + ".part";
+		FILE *f = std::fopen(partial.c_str(), "wb");
+		if (!f) {
+			std::fprintf(stderr, "dawkit_scan: cannot write %s\n", out_path);
+			std::_Exit(1);
+		}
+		std::fputs(out.c_str(), f);
+		std::fclose(f);
+		std::remove(out_path);
+		std::rename(partial.c_str(), out_path);
+	} else {
+		std::fputs(out.c_str(), answer);
+		std::fflush(answer);
+	}
 	// Not through the plugins' own teardown: some never expect to be unloaded, and the answer is out.
-#ifndef _WIN32
-	_exit(0);
-#else
-	return 0;
-#endif
+	std::_Exit(0);
 }

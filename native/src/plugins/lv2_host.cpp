@@ -435,7 +435,7 @@ public:
 
 	bool editor_supported() override { return description.has_editor; }
 
-	bool editor_open(unsigned long parent, int &width, int &height) override {
+	bool editor_open(uintptr_t parent, int &width, int &height) override {
 		Lilv &L = Lilv::get();
 		editor_close();
 		LilvUIs *uis = L.lilv_plugin_get_uis(plugin);

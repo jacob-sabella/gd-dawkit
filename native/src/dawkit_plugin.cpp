@@ -1,6 +1,6 @@
 #include "dawkit_plugin.h"
 
-#include "plugins/x11_editor.h"
+#include "plugins/editor_window.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -72,6 +72,8 @@ PackedStringArray DawKitPlugin::formats() {
 #ifdef DAWKIT_HOSTS_PLUGINS
 	out.push_back("CLAP");
 	out.push_back("VST3");
+#endif
+#ifdef DAWKIT_HOSTS_LV2
 	out.push_back("LV2");
 #endif
 	return out;
@@ -384,7 +386,7 @@ PackedVector2Array DawKitPlugin::process(const PackedVector2Array &input) {
 
 bool DawKitPlugin::editor_supported() {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	return plugin && dawkit::X11Editor::available() && plugin->editor_supported();
+	return plugin && dawkit::EditorWindow::available() && plugin->editor_supported();
 #else
 	return false;
 #endif
@@ -399,11 +401,11 @@ bool DawKitPlugin::editor_open() {
 		return true;
 	}
 	std::string why;
-	if (!dawkit::X11Editor::available(&why)) {
+	if (!dawkit::EditorWindow::available(&why)) {
 		problem = str(why);
 		return false;
 	}
-	editor = std::make_unique<dawkit::X11Editor>();
+	editor = std::make_unique<dawkit::EditorWindow>();
 	if (!editor->create(640, 480, why)) {
 		problem = str(why);
 		editor.reset();

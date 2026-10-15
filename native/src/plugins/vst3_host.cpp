@@ -36,6 +36,13 @@ using namespace Steinberg::Vst;
 
 namespace dawkit {
 
+// The kind of window a plugin's view is put in, here.
+#ifdef _WIN32
+static const FIDString WINDOW_TYPE = kPlatformTypeHWND;
+#else
+static const FIDString WINDOW_TYPE = kPlatformTypeX11EmbedWindowID;
+#endif
+
 namespace {
 
 // --- COM plumbing -------------------------------------------------------------------------------
@@ -905,12 +912,12 @@ public:
 		if (!controller) return false;
 		if (editor_known >= 0) return editor_known == 1;
 		IPlugView *v = controller->createView(ViewType::kEditor);
-		editor_known = v && v->isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) == kResultTrue ? 1 : 0;
+		editor_known = v && v->isPlatformTypeSupported(WINDOW_TYPE) == kResultTrue ? 1 : 0;
 		if (v) v->release();
 		return editor_known == 1;
 	}
 
-	bool editor_open(unsigned long parent, int &width, int &height) override {
+	bool editor_open(uintptr_t parent, int &width, int &height) override {
 		editor_close();
 		if (!controller) {
 			problem = description.name + " has no window";
@@ -921,7 +928,7 @@ public:
 			problem = description.name + " has no window";
 			return false;
 		}
-		if (view->isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) != kResultTrue) {
+		if (view->isPlatformTypeSupported(WINDOW_TYPE) != kResultTrue) {
 			problem = description.name + " has no window this host can show";
 			drop(view);
 			return false;
@@ -932,7 +939,7 @@ public:
 			width = r.getWidth();
 			height = r.getHeight();
 		}
-		if (view->attached((void *)(uintptr_t)parent, kPlatformTypeX11EmbedWindowID) != kResultOk) {
+		if (view->attached((void *)(uintptr_t)parent, WINDOW_TYPE) != kResultOk) {
 			problem = description.name + " would not go into the window it was given";
 			view->setFrame(nullptr);
 			drop(view);

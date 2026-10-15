@@ -15,7 +15,7 @@
 #include <vector>
 
 namespace dawkit {
-class X11Editor;
+class EditorWindow;
 }
 
 namespace godot {
@@ -129,7 +129,7 @@ private:
 	dawkit::Ring<dawkit::Event, 2048> live_events;
 	std::mutex live_push;
 	std::vector<dawkit::Event> merged;
-	std::unique_ptr<dawkit::X11Editor> editor;
+	std::unique_ptr<dawkit::EditorWindow> editor;
 	Ref<Image> picture;
 	std::vector<uint8_t> pixels;
 };

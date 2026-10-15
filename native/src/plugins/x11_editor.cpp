@@ -1,4 +1,4 @@
-#include "x11_editor.h"
+#include "editor_window.h"
 #include "library.h"
 
 #include <X11/Xlib.h>
@@ -66,7 +66,7 @@ constexpr int HOLDER_X = -30000;
 
 } // namespace
 
-bool X11Editor::available(std::string *why) {
+bool EditorWindow::available(std::string *why) {
 	Xlib &X = Xlib::get();
 	if (!X.dpy && why) {
 		*why = X.missing;
@@ -74,7 +74,7 @@ bool X11Editor::available(std::string *why) {
 	return X.dpy != nullptr;
 }
 
-bool X11Editor::create(int w, int h, std::string &why) {
+bool EditorWindow::create(int w, int h, std::string &why) {
 	Xlib &X = Xlib::get();
 	if (!X.dpy) {
 		why = X.missing;
@@ -99,7 +99,7 @@ bool X11Editor::create(int w, int h, std::string &why) {
 	return true;
 }
 
-void X11Editor::resize(int w, int h) {
+void EditorWindow::resize(int w, int h) {
 	Xlib &X = Xlib::get();
 	if (!holder || w <= 0 || h <= 0 || (w == width && h == height)) {
 		return;
@@ -107,13 +107,13 @@ void X11Editor::resize(int w, int h) {
 	width = w;
 	height = h;
 	X.XResizeWindow(X.dpy, holder, (unsigned)w, (unsigned)h);
-	if (unsigned long c = content(); c && c != holder) {
+	if (uintptr_t c = content(); c && c != holder) {
 		X.XResizeWindow(X.dpy, c, (unsigned)w, (unsigned)h);
 	}
 	X.XFlush(X.dpy);
 }
 
-void X11Editor::destroy() {
+void EditorWindow::destroy() {
 	Xlib &X = Xlib::get();
 	if (holder && X.dpy) {
 		X.XDestroyWindow(X.dpy, holder);
@@ -124,7 +124,7 @@ void X11Editor::destroy() {
 }
 
 // The plugin's window in ours: the biggest one showing, or ours when it has put none there yet.
-unsigned long X11Editor::content() {
+uintptr_t EditorWindow::content() {
 	Xlib &X = Xlib::get();
 	Window root, parent, *kids = nullptr;
 	unsigned int n = 0;
@@ -144,7 +144,7 @@ unsigned long X11Editor::content() {
 	return best;
 }
 
-void X11Editor::pump() {
+void EditorWindow::pump() {
 	Xlib &X = Xlib::get();
 	if (!X.dpy) return;
 	while (X.XPending(X.dpy)) {
@@ -153,7 +153,7 @@ void X11Editor::pump() {
 	}
 	if (!holder) return;
 	// A plugin that sizes its own window, without saying so through the format's own call.
-	unsigned long c = content();
+	uintptr_t c = content();
 	XWindowAttributes a;
 	if (c && c != holder && X.XGetWindowAttributes(X.dpy, c, &a) && a.width > 1 && a.height > 1 &&
 			(a.width != width || a.height != height)) {
@@ -171,7 +171,7 @@ void X11Editor::pump() {
 // A window manager tells a window where it is on the screen whenever it moves it, and some
 // toolkits (Wine's, which yabridge's plugins draw with; GDK) work a click's place in the window
 // out from that. So it is told, the way a window manager would, whenever it is no longer true.
-void X11Editor::tell_where(unsigned long w) {
+void EditorWindow::tell_where(uintptr_t w) {
 	Xlib &X = Xlib::get();
 	XWindowAttributes a;
 	int rx = 0, ry = 0;
@@ -197,7 +197,7 @@ void X11Editor::tell_where(unsigned long w) {
 	entered = 0;
 }
 
-bool X11Editor::capture(std::vector<uint8_t> &rgba, int &w, int &h, bool &same) {
+bool EditorWindow::capture(std::vector<uint8_t> &rgba, int &w, int &h, bool &same) {
 	Xlib &X = Xlib::get();
 	same = false;
 	if (!holder) return false;
@@ -247,7 +247,7 @@ bool X11Editor::capture(std::vector<uint8_t> &rgba, int &w, int &h, bool &same) 
 }
 
 // The deepest window under (x, y), and the point in its own coordinates: it is the one listening.
-unsigned long X11Editor::under(int x, int y, int &cx, int &cy) {
+uintptr_t EditorWindow::under(int x, int y, int &cx, int &cy) {
 	Xlib &X = Xlib::get();
 	Window w = target, child = 0;
 	int bx, by;
@@ -261,7 +261,7 @@ unsigned long X11Editor::under(int x, int y, int &cx, int &cy) {
 
 // GDK and Wine hand a click to the window they last saw the pointer go into; nothing real ever
 // goes into one kept off the screen, so it is said to, once, before the first thing that needs it.
-void X11Editor::enter(unsigned long w, int cx, int cy, int rx, int ry) {
+void EditorWindow::enter(uintptr_t w, int cx, int cy, int rx, int ry) {
 	Xlib &X = Xlib::get();
 	if (w == entered) return;
 	XEvent e;
@@ -282,7 +282,7 @@ void X11Editor::enter(unsigned long w, int cx, int cy, int rx, int ry) {
 	entered = w;
 }
 
-void X11Editor::pointer_move(int x, int y) {
+void EditorWindow::pointer_move(int x, int y) {
 	Xlib &X = Xlib::get();
 	if (!holder) return;
 	if (!target) target = content();
@@ -309,7 +309,7 @@ void X11Editor::pointer_move(int x, int y) {
 	X.XFlush(X.dpy);
 }
 
-void X11Editor::send_button(int x, int y, int button, bool down) {
+void EditorWindow::send_button(int x, int y, int button, bool down) {
 	Xlib &X = Xlib::get();
 	if (!holder) return;
 	if (!target) target = content();
@@ -339,11 +339,11 @@ void X11Editor::send_button(int x, int y, int button, bool down) {
 	X.XFlush(X.dpy);
 }
 
-void X11Editor::pointer_button(int x, int y, int button, bool down) {
+void EditorWindow::pointer_button(int x, int y, int button, bool down) {
 	send_button(x, y, button, down);
 }
 
-void X11Editor::wheel(int x, int y, int notches) {
+void EditorWindow::wheel(int x, int y, int notches) {
 	int button = notches > 0 ? 4 : 5;
 	for (int i = 0; i < std::abs(notches); i++) {
 		send_button(x, y, button, true);
@@ -351,7 +351,7 @@ void X11Editor::wheel(int x, int y, int notches) {
 	}
 }
 
-void X11Editor::key(unsigned long keysym, bool down, unsigned int modifiers) {
+void EditorWindow::key(unsigned long keysym, bool down, unsigned int modifiers) {
 	Xlib &X = Xlib::get();
 	if (!holder) return;
 	if (!target) target = content();

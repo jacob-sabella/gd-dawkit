@@ -68,17 +68,18 @@ where each note starts on its own sample. In a project it is an effect of kind `
 
 ## Third-party plugins
 
-On Linux the engine hosts **CLAP, VST3 and LV2** plugins, effects and instruments, with their own
-windows. `native/src/plugins` is plain C++ over the formats' interface headers
-(`native/third_party`: CLAP and VST3 3.8 under MIT, LV2 and lilv under ISC); no SDK hosting code.
-lilv (for LV2) and Xlib (for windows) are opened at run time, so a system without them still loads
-the engine, with fewer plugins. Windows and Android build with hosting left out
-(`DawKitPlugin.hosting_available()` is false).
+The engine hosts **CLAP and VST3** plugins on Linux and Windows, and **LV2** on Linux, effects and
+instruments, with their own windows. `native/src/plugins` is plain C++ over the formats' interface
+headers (`native/third_party`: CLAP and VST3 3.8 under MIT, LV2 and lilv under ISC); no SDK
+hosting code. lilv (for LV2) and Xlib (for windows) are opened at run time, so a Linux system
+without them still loads the engine, with fewer plugins. Android builds with hosting left out
+(`DawKitPlugin.hosting_available()` is false; `DawKitPlugin.formats()` lists what a build hosts).
 
-- **Finding them.** `addons/dawkit/bin/dawkit_scan.linux.<arch>` looks at one file in a process of
-  its own and prints JSON (`dawkit_scan VST3 <bundle>`, `CLAP <file>`, `LV2` for every LV2 plugin,
-  `files <FORMAT>` for the files in the usual places), so a plugin that crashes as it starts costs
-  its own entry, not the host. `DawKitPlugin.scan_file` does the same in-process. Plugins under
+- **Finding them.** `addons/dawkit/bin/dawkit_scan.<system>.<arch>` (`.exe` on Windows) looks at
+  one file in a process of its own and prints JSON (`dawkit_scan VST3 <bundle>`, `CLAP <file>`,
+  `LV2` for every LV2 plugin, `files <FORMAT>` for the files in the usual places; `--out <file>`
+  first to have it written to a file instead), so a plugin that crashes as it starts costs its own
+  entry, not the host. An exported game ships it beside its executable. `DawKitPlugin.scan_file` does the same in-process. Plugins under
   yabridge (Windows plugins under Wine) scan and load like native ones.
 - **`DawKitPlugin`** is one loaded instance: parameters (normalised 0-1, with the plugin's own
   text for a value, and the ones its window moved), state (a VST3 as a `.vstpreset`, the form a
@@ -91,10 +92,19 @@ the engine, with fewer plugins. Windows and Android build with hosting left out
 - **Instruments.** `DawKitLane.set_instrument(plugin)` and `set_notes(notes)` play a lane's notes
   through the plugin, each on its sample, through loops and jumps (whatever was sounding stops), and
   notes played live on the plugin sound through the lane whether the song plays or not.
-- **Windows.** A plugin's window is embedded in an X11 window of the engine's, kept off every
-  screen; `editor_capture()` reads it into `editor_image()`, and `editor_pointer_*`, `editor_wheel`
-  and `editor_key` send input into it, so a host shows the window wherever it likes (a texture in
-  3D, a panel) and nothing appears on the desktop. A fully headless display (Xvfb) works too.
+- **Windows.** A plugin's window is embedded in a window of the engine's, kept off every screen;
+  `editor_capture()` reads it into `editor_image()`, and `editor_pointer_*`, `editor_wheel` and
+  `editor_key` send input into it, so a host shows the window wherever it likes (a texture in 3D,
+  a panel) and nothing appears on the desktop. On Linux that is an X11 window, read with
+  XGetImage (a fully headless display, Xvfb, works too). On Windows it is a tool window read with
+  PrintWindow, and the mouse is posted to the plugin's window under the point. Because nothing
+  is under the real cursor there, the engine:
+  - holds back the mouse-leave Windows reports at once;
+  - hands back the mouse capture a plugin takes on a click, so the game's own window keeps the
+    real mouse;
+  - steers `WindowFromPoint` for the whole process (a 12-byte jump at user32's, to the engine's,
+    which answers for its own windows and asks `win32u!NtUserWindowFromPoint` for everything else).
+  JUCE plugins take no click without that last one.
 
 The tests use a CLAP built for them (`native/test_plugin`: a gain and a sine instrument).
 

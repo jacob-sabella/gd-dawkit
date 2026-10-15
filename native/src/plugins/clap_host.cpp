@@ -14,6 +14,13 @@
 
 namespace dawkit {
 
+// The kind of window a plugin's is put in, here.
+#ifdef _WIN32
+static const char *const WINDOW_API = CLAP_WINDOW_API_WIN32;
+#else
+static const char *const WINDOW_API = CLAP_WINDOW_API_X11;
+#endif
+
 namespace {
 
 // A .clap file, opened once however many plugins come out of it, and its entry initialised once.
@@ -313,16 +320,16 @@ public:
 	}
 
 	bool editor_supported() override {
-		return ext_gui && ext_gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false);
+		return ext_gui && ext_gui->is_api_supported(plugin, WINDOW_API, false);
 	}
 
-	bool editor_open(unsigned long parent, int &width, int &height) override {
+	bool editor_open(uintptr_t parent, int &width, int &height) override {
 		if (!editor_supported()) {
 			problem = description.name + " has no window this host can show";
 			return false;
 		}
 		editor_close();
-		if (!ext_gui->create(plugin, CLAP_WINDOW_API_X11, false)) {
+		if (!ext_gui->create(plugin, WINDOW_API, false)) {
 			problem = description.name + " would not make its window";
 			return false;
 		}
@@ -331,8 +338,12 @@ public:
 		uint32_t w = 0, h = 0;
 		ext_gui->get_size(plugin, &w, &h);
 		clap_window_t win;
-		win.api = CLAP_WINDOW_API_X11;
-		win.x11 = parent;
+		win.api = WINDOW_API;
+#ifdef _WIN32
+		win.win32 = (clap_hwnd)parent;
+#else
+		win.x11 = (clap_xwnd)parent;
+#endif
 		if (!ext_gui->set_parent(plugin, &win)) {
 			problem = description.name + " would not go into the window it was given";
 			editor_close();

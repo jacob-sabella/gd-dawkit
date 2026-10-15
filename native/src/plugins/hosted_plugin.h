@@ -180,9 +180,9 @@ public:
 	// Whatever the plugin asked to be done on the main thread, done. Once a frame.
 	virtual void main_thread() {}
 
-	// Its own window, embedded in `parent` (an X11 window). False when it has none or it failed.
+	// Its own window, embedded in `parent` (an X11 window, or an HWND). False when it has none or it failed.
 	virtual bool editor_supported() = 0;
-	virtual bool editor_open(unsigned long parent, int &width, int &height) = 0;
+	virtual bool editor_open(uintptr_t parent, int &width, int &height) = 0;
 	virtual void editor_close() = 0;
 	// The size it last asked to be, when it asked since this was last called.
 	bool take_editor_resize(int &width, int &height);
