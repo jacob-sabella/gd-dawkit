@@ -33,7 +33,7 @@ jobs:
       - name: Compilers
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q cmake g++ pkg-config
+          sudo apt-get install -y -q cmake g++ pkg-config libx11-dev
 
       - name: Cache Godot
         uses: actions/cache@v6
