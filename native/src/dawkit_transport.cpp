@@ -78,7 +78,34 @@ void DawKitTransport::set_hold(double seconds) {
 	hold.store(seconds < 0.0 ? -1 : (int64_t)std::llround(seconds * rate.load()));
 }
 
+void DawKitTransport::set_tempo(double bpm, int num, int den) {
+	tempo.store(bpm > 0.0 ? bpm : 120.0);
+	numerator.store(num > 0 ? num : 4);
+	denominator.store(den > 0 ? den : 4);
+}
+
+void DawKitTransport::describe(int64_t at, dawkit::Transport &out) const {
+	int64_t song = song_frame_at(at);
+	int r = rate.load();
+	out.rate = r;
+	out.playing = song != NOT_PLAYING;
+	if (!out.playing) {
+		song = anchor_song.load();
+	}
+	out.seconds = (double)song / r;
+	out.tempo = tempo.load();
+	out.numerator = numerator.load();
+	out.denominator = denominator.load();
+	out.beats = out.seconds * out.tempo / 60.0;
+	double bar = out.numerator * 4.0 / out.denominator;
+	out.bar_start = bar > 0.0 ? std::floor(out.beats / bar) * bar : 0.0;
+	out.frames = at;
+}
+
 void DawKitTransport::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_tempo", "bpm", "numerator", "denominator"), &DawKitTransport::set_tempo,
+			DEFVAL(4), DEFVAL(4));
+	ClassDB::bind_method(D_METHOD("get_tempo"), &DawKitTransport::get_tempo);
 	ClassDB::bind_method(D_METHOD("set_hold", "seconds"), &DawKitTransport::set_hold);
 	ClassDB::bind_method(D_METHOD("play_from", "seconds", "lead"), &DawKitTransport::play_from);
 	ClassDB::bind_method(D_METHOD("stop"), &DawKitTransport::stop);

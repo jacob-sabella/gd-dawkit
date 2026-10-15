@@ -39,6 +39,12 @@ func _initialize() -> void:
 	_test_automation_is_read_along_the_song()
 	_test_automation_survives_the_file_without_our_extras()
 	_test_the_official_examples_open_and_come_back()
+	_test_plugins_are_found_and_described()
+	_test_a_plugin_effect_changes_the_sound()
+	_test_a_plugins_state_comes_back()
+	_test_an_instrument_plugin_plays_live_notes()
+	_test_a_lane_plays_its_notes_through_its_instrument()
+	_test_a_plugin_effect_runs_once_for_every_bus_it_is_on()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -1239,3 +1245,204 @@ func _test_the_official_examples_open_and_come_back() -> void:
 			p.master.effects.size() == 1 and p.master.effects[0].name == "Limiter"
 			and p.tracks[0].automation.size() == 1 and p.tracks[0].automation[0].target == "volume"
 			and p.markers.size() == 2 and p.markers[1].name == "Chorus")
+
+
+# --- hosted plugins ------------------------------------------------------------------------------
+
+## The CLAP built beside the extension for these checks (native/test_plugin), or "" where plugins
+## are not hosted.
+func _test_plugin() -> String:
+	if not ClassDB.class_exists(&"DawKitPlugin") or not ClassDB.class_call_static(&"DawKitPlugin", &"hosting_available"):
+		return ""
+	var path := ProjectSettings.globalize_path("res://native/build/dawkit_test.clap")
+	return path if FileAccess.file_exists(path) else ""
+
+
+func _loaded(id: String) -> Object:
+	var p = ClassDB.instantiate(&"DawKitPlugin")
+	if not p.load({"format": "CLAP", "id": id, "path": _test_plugin()}):
+		check("the test plugin %s loads (%s)" % [id, p.get_error()], false)
+		return null
+	p.activate(48000.0, 512)
+	return p
+
+
+func _test_plugins_are_found_and_described() -> void:
+	var path := _test_plugin()
+	if path == "":
+		check("the test plugin is built (tools/build_native.sh)", not ClassDB.class_exists(&"DawKitPlugin"))
+		return
+	var found: Array = ClassDB.class_call_static(&"DawKitPlugin", &"scan_file", "CLAP", path)
+	var ids := found.map(func(d: Dictionary) -> String: return d["id"])
+	check("a scan finds both plugins in the file (%s)" % [ids], ids == ["dawkit.test.gain", "dawkit.test.sine"])
+	check("and knows the instrument from the effect", found.size() == 2
+			and not found[0]["instrument"] and found[1]["instrument"])
+	check("and says where each is", found.size() == 2 and found[0]["path"] == path and found[0]["name"] == "Test Gain")
+	var dir := path.get_base_dir()
+	var files: PackedStringArray = ClassDB.class_call_static(&"DawKitPlugin", &"find_files", "CLAP", PackedStringArray([dir]))
+	check("the file is found by looking in its folder", path in files)
+	# The scanner, in a process of its own, says the same.
+	var scanner := ProjectSettings.globalize_path("res://addons/dawkit/bin/dawkit_scan.linux.x86_64")
+	var out := []
+	var rc := OS.execute(scanner, ["CLAP", path], out)
+	var parsed = JSON.parse_string(out[0] if out.size() > 0 else "")
+	check("dawkit_scan finds the same, as JSON (rc %d)" % rc, rc == 0 and parsed is Array and parsed.size() == 2
+			and parsed[1]["id"] == "dawkit.test.sine" and parsed[1]["instrument"] == true)
+	var bad = ClassDB.instantiate(&"DawKitPlugin")
+	check("a plugin that is not there will not load, and says so",
+			not bad.load({"format": "CLAP", "id": "no.such", "path": path}) and bad.get_error() != "")
+
+
+func _test_a_plugin_effect_changes_the_sound() -> void:
+	if _test_plugin() == "":
+		return
+	var p = _loaded("dawkit.test.gain")
+	if p == null:
+		return
+	check("the effect has its one parameter", p.param_count() == 1 and p.param_info(0)["name"] == "Gain")
+	close("its value starts at its default (1 of 0-2, normalised)", p.get_param(0), 0.5)
+	var dc := PackedVector2Array()
+	dc.resize(2000)
+	dc.fill(Vector2(0.8, -0.4))
+	var out: PackedVector2Array = p.process(dc)
+	close("at its default the sound comes through as it went in", out[1999].x, 0.8, 0.001)
+	p.set_param(0, 0.25)
+	out = p.process(dc)
+	close("set to half, it is half as loud, from the next block", out[1999].x, 0.4, 0.001)
+	close("on both channels", out[1999].y, -0.2, 0.001)
+	check("and the plugin says so in its own words (%s)" % p.param_text(0), p.param_text(0) == "-6.0 dB")
+	check("a stereo effect is two channels in and out", p.input_channels() == 2 and p.output_channels() == 2)
+
+
+func _test_a_plugins_state_comes_back() -> void:
+	if _test_plugin() == "":
+		return
+	var a = _loaded("dawkit.test.gain")
+	if a == null:
+		return
+	a.set_param(0, 0.75)
+	var dc := PackedVector2Array()
+	dc.resize(600)
+	dc.fill(Vector2(0.5, 0.5))
+	a.process(dc)  # the plugin takes the value in its next block
+	var state: PackedByteArray = a.get_state()
+	check("a plugin's state is saved (%d bytes)" % state.size(), state.size() > 0)
+	var b = _loaded("dawkit.test.gain")
+	check("and loads into another of it", b.set_state(state))
+	close("which then has the value it was saved with", b.get_param(0), 0.75, 0.0001)
+	close("and sounds it", b.process(dc)[599].x, 0.75, 0.001)
+
+
+func _test_an_instrument_plugin_plays_live_notes() -> void:
+	if _test_plugin() == "":
+		return
+	var p = _loaded("dawkit.test.sine")
+	if p == null:
+		return
+	check("an instrument is one", p.is_instrument() and p.input_channels() == 0 and p.output_channels() == 2)
+	var silence := PackedVector2Array()
+	silence.resize(4800)
+	var loudest := func(frames: PackedVector2Array) -> float:
+		var m := 0.0
+		for f in frames:
+			m = maxf(m, absf(f.x))
+		return m
+	close("it is silent before a note", loudest.call(p.process(silence)), 0.0)
+	p.note_on(69, 127)
+	var heard: float = loudest.call(p.process(silence))
+	close("a note played on it sounds, at its level (%.3f)" % heard, heard, 0.5, 0.01)
+	p.note_off(69)
+	p.process(silence)
+	close("and stops when it is let go", loudest.call(p.process(silence)), 0.0)
+
+
+func _test_a_lane_plays_its_notes_through_its_instrument() -> void:
+	if _test_plugin() == "":
+		return
+	var p = _loaded("dawkit.test.sine")
+	if p == null:
+		return
+	var t = ClassDB.instantiate(&"DawKitTransport")
+	t.set_rate(48000)
+	var lane = ClassDB.instantiate(&"DawKitLane")
+	lane.set_transport(t)
+	lane.set_instrument(p)
+	# One note from 0.5 s to 0.6 s.
+	lane.set_notes(PackedFloat64Array([0.5, 0.6, 69, 127, 0]))
+	check("the lane has its note", lane.note_count() == 1)
+	var a = lane.instantiate_playback()
+	var b = lane.instantiate_playback()
+	var out_a := PackedVector2Array()
+	var out_b := PackedVector2Array()
+	for k in 2:
+		a.mix_audio(1.0, 512)
+		b.mix_audio(1.0, 512)
+	t.play_from(0.4, 0.01)
+	var started: int = t.get_anchor_clock()
+	for k in 30:
+		out_a.append_array(a.mix_audio(1.0, 512))
+		out_b.append_array(b.mix_audio(1.0, 512))
+	var first := -1
+	var last := -1
+	for i in out_a.size():
+		if absf(out_a[i].x) > 0.0001:
+			if first < 0:
+				first = i
+			last = i
+	var base := 2 * 512
+	var expected := started + int(0.1 * 48000) - base
+	# A sine starts at 0, so its first sound is the sample after the note.
+	check("the note starts on its sample (%d, wanted %d)" % [first, expected], absi(first - expected) <= 1)
+	check("and ends on its own (%d, wanted under %d)" % [last, expected + 4800], last > expected + 4700 and last < expected + 4800)
+	check("two playbacks of the lane hear the same instrument, played once", out_a == out_b)
+	# A note played on the plugin live is heard through the lane, stopped or not.
+	t.stop()
+	p.note_on(60, 100)
+	var live := PackedVector2Array()
+	for k in 4:
+		live.append_array(a.mix_audio(1.0, 512))
+	var any := false
+	for f in live:
+		any = any or absf(f.x) > 0.01
+	check("a note played live sounds through the lane while the song is stopped", any)
+	p.all_notes_off()
+
+
+func _test_a_plugin_effect_runs_once_for_every_bus_it_is_on() -> void:
+	if _test_plugin() == "":
+		return
+	var p = _loaded("dawkit.test.gain")
+	if p == null:
+		return
+	var e = ClassDB.instantiate(&"DawKitPluginEffect")
+	e.set_plugin(p)
+	check("a plugin effect holds its plugin", e.get_plugin() == p)
+	p.set_param(0, 0.25)
+	# Two buses (a track's and its send's) with the effect, each block after a lane has moved the
+	# song's clock, as the server mixes them: streams first, then each bus's effects.
+	var t = ClassDB.instantiate(&"DawKitTransport")
+	t.set_rate(48000)
+	e.set_transport(t)
+	var lane = ClassDB.instantiate(&"DawKitLane")
+	lane.set_transport(t)
+	var clock = lane.instantiate_playback()
+	var block := PackedVector2Array()
+	block.resize(512)
+	var before: int = p.blocks_run()
+	var same := true
+	var level := 0.0
+	for k in 8:
+		clock.mix_audio(1.0, 512)
+		for i in 512:
+			block[i] = Vector2(0.5, 0.5) * (1.0 if (k + i) % 2 == 0 else -1.0)
+		var order := [0, 1] if k % 2 == 0 else [1, 0]
+		var a: PackedVector2Array = e.process_as(order[0], block)
+		var b: PackedVector2Array = e.process_as(order[1], block)
+		same = same and a == b
+		level = a[511].x
+	check("the plugin runs once a block for both buses (%d runs in 8 blocks)" % (p.blocks_run() - before),
+			p.blocks_run() - before == 8)
+	check("and both hear what it made", same)
+	close("which is the effect's sound", absf(level), 0.25, 0.001)
+	e.set_bypass(true)
+	close("bypassed, the sound goes through untouched", e.process_as(0, block)[0].x, block[0].x)

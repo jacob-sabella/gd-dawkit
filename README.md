@@ -14,6 +14,7 @@ whatever it likes and drives the engine through its API. dawlings (a 3D studio g
       io/                   DAWproject files (DawKitDawproject) and the XML they are made of;
                             audio files people bring (DawKitAudioFile)
       engine/               the click (DawKitMetronome) and the built-in instrument (DawKitTine)
+    native/                 the native core (GDExtension): lanes, transport, plugin hosting
     tests/                  the engine's own checks, run headless
     tools/test.sh           runs them
 
@@ -64,6 +65,38 @@ right point in the bar keeps time and a recording of it can be measured against 
 Played live a note at a time, or a whole clip at once with `render_notes(notes, seconds, rate)`,
 where each note starts on its own sample. In a project it is an effect of kind `"tine"` with
 `instrument` set, written to DAWproject as a `BuiltinDevice` with `deviceRole="instrument"`.
+
+## Third-party plugins
+
+On Linux the engine hosts **CLAP, VST3 and LV2** plugins, effects and instruments, with their own
+windows. `native/src/plugins` is plain C++ over the formats' interface headers
+(`native/third_party`: CLAP and VST3 3.8 under MIT, LV2 and lilv under ISC); no SDK hosting code.
+lilv (for LV2) and Xlib (for windows) are opened at run time, so a system without them still loads
+the engine, with fewer plugins. Windows and Android build with hosting left out
+(`DawKitPlugin.hosting_available()` is false).
+
+- **Finding them.** `addons/dawkit/bin/dawkit_scan.linux.<arch>` looks at one file in a process of
+  its own and prints JSON (`dawkit_scan VST3 <bundle>`, `CLAP <file>`, `LV2` for every LV2 plugin,
+  `files <FORMAT>` for the files in the usual places), so a plugin that crashes as it starts costs
+  its own entry, not the host. `DawKitPlugin.scan_file` does the same in-process. Plugins under
+  yabridge (Windows plugins under Wine) scan and load like native ones.
+- **`DawKitPlugin`** is one loaded instance: parameters (normalised 0-1, with the plugin's own
+  text for a value, and the ones its window moved), state (a VST3 as a `.vstpreset`, the form a
+  DAWproject keeps it in; CLAP's own stream; LV2 state as Turtle), live notes, latency, and its
+  window. Call `DawKitPlugin.pump()` once a frame: plugins' timers, the work they ask for on the
+  main thread, and their windows run from it.
+- **Effects.** A `DawKitPluginEffect` goes on a bus like any AudioEffect. Put on several buses that
+  play the same lane (a track's, its sends', its cue's), it runs the plugin once a block, told apart
+  by the transport's clock, and the other buses hear what it made.
+- **Instruments.** `DawKitLane.set_instrument(plugin)` and `set_notes(notes)` play a lane's notes
+  through the plugin, each on its sample, through loops and jumps (whatever was sounding stops), and
+  notes played live on the plugin sound through the lane whether the song plays or not.
+- **Windows.** A plugin's window is embedded in an X11 window of the engine's, kept off every
+  screen; `editor_capture()` reads it into `editor_image()`, and `editor_pointer_*`, `editor_wheel`
+  and `editor_key` send input into it, so a host shows the window wherever it likes (a texture in
+  3D, a panel) and nothing appears on the desktop. A fully headless display (Xvfb) works too.
+
+The tests use a CLAP built for them (`native/test_plugin`: a gain and a sine instrument).
 
 ## Tempo map
 

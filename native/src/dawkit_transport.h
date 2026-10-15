@@ -1,5 +1,7 @@
 #pragma once
 
+#include "plugins/hosted_plugin.h"
+
 #include <godot_cpp/classes/ref_counted.hpp>
 
 #include <atomic>
@@ -47,6 +49,13 @@ public:
 	void set_hold(double seconds);
 	int64_t get_hold_frame() const { return hold.load(); }
 
+	// The song's tempo and metre where it is now, for plugins that keep time with it: quarter
+	// notes a minute, and the time signature.
+	void set_tempo(double bpm, int numerator, int denominator);
+	double get_tempo() const { return tempo.load(); }
+	// Where the song is at clock frame `clock`, as a hosted plugin is told it.
+	void describe(int64_t clock, dawkit::Transport &out) const;
+
 protected:
 	static void _bind_methods();
 
@@ -60,6 +69,9 @@ private:
 	std::atomic<int64_t> loop_to{ 0 };
 	std::atomic<bool> looping{ false };
 	std::atomic<int64_t> hold{ -1 };
+	std::atomic<double> tempo{ 120.0 };
+	std::atomic<int> numerator{ 4 };
+	std::atomic<int> denominator{ 4 };
 };
 
 } // namespace godot

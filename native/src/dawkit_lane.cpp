@@ -100,7 +100,180 @@ Ref<AudioStreamPlayback> DawKitLane::_instantiate_playback() const {
 	return p;
 }
 
+void DawKitLane::publish(std::shared_ptr<const Instrument> next) {
+	std::shared_ptr<const Instrument> was = std::atomic_exchange(&instrument, next);
+	if (was) {
+		retired.push_back(was);
+	}
+	// Only this lane and its retired list hold one the mixer is not using.
+	retired.erase(std::remove_if(retired.begin(), retired.end(),
+						  [](const std::shared_ptr<const Instrument> &r) { return r.use_count() == 1; }),
+			retired.end());
+}
+
+void DawKitLane::set_instrument(const Ref<DawKitPlugin> &p) {
+	instrument_ref = p;
+	std::shared_ptr<const Instrument> had = std::atomic_load(&instrument);
+	if (p.is_null()) {
+		publish(nullptr);
+		return;
+	}
+	auto next = std::make_shared<Instrument>();
+	next->plugin = p;
+	if (had) {
+		next->notes = had->notes;
+	} else if (!pending_notes.empty()) {
+		next->notes = pending_notes;
+	}
+	publish(next);
+}
+
+void DawKitLane::set_notes(const PackedFloat64Array &flat) {
+	int rate = transport.is_valid() ? transport->get_rate() : 48000;
+	std::vector<Note> notes;
+	const double *v = flat.ptr();
+	for (int64_t i = 0; i + 4 < flat.size(); i += 5) {
+		Note n;
+		n.start = (int64_t)std::llround(v[i] * rate);
+		n.end = std::max(n.start + 1, (int64_t)std::llround(v[i + 1] * rate));
+		n.key = (uint8_t)std::clamp((int)v[i + 2], 0, 127);
+		n.velocity = (uint8_t)std::clamp((int)std::lround(v[i + 3]), 1, 127);
+		n.channel = (uint8_t)std::clamp((int)v[i + 4], 0, 15);
+		notes.push_back(n);
+	}
+	std::stable_sort(notes.begin(), notes.end(), [](const Note &a, const Note &b) { return a.start < b.start; });
+	pending_notes = notes;
+	if (instrument_ref.is_null()) {
+		return;
+	}
+	auto next = std::make_shared<Instrument>();
+	next->plugin = instrument_ref;
+	next->notes = std::move(notes);
+	publish(next);
+}
+
+int DawKitLane::note_count() const {
+	return (int)pending_notes.size();
+}
+
+void DawKitLane::mix_instrument(int64_t block, AudioFrame *buffer, int32_t frames) {
+	std::shared_ptr<const Instrument> inst = std::atomic_load(&instrument);
+	if (!inst || inst->plugin.is_null()) {
+		return;
+	}
+	DawKitPlugin *p = inst->plugin.ptr();
+	if (!p->is_active() || p->max_block_size() <= 0) {
+		return;
+	}
+	if (block != made_block || (int32_t)made_l.size() != frames) {
+		made_block = block;
+		if ((int32_t)made_l.capacity() < frames) {
+			made_l.reserve(std::max(frames, 4096));
+			made_r.reserve(std::max(frames, 4096));
+		}
+		made_l.assign(frames, 0.0f);
+		made_r.assign(frames, 0.0f);
+		if (events.capacity() < 4096) {
+			events.reserve(4096);
+			sounding.reserve(1024);
+		}
+		Ref<DawKitTransport> t = transport;
+		const int64_t hold = held.load() ? t->get_hold_frame() : -1;
+		int block_size = p->max_block_size();
+		for (int32_t at = 0; at < frames; at += block_size) {
+			int32_t n = std::min<int32_t>(block_size, frames - at);
+			events.clear();
+			auto push = [&](dawkit::Event e) {
+				if (events.size() < events.capacity()) events.push_back(e);
+			};
+			auto off = [&](const Sounding &s, int32_t offset) {
+				dawkit::Event e;
+				e.kind = dawkit::Event::NOTE_OFF;
+				e.key = s.key;
+				e.channel = s.channel;
+				e.offset = offset;
+				push(e);
+			};
+			// The block in runs of song frames one after another: a loop's wrap or a jump ends one.
+			int32_t i = 0;
+			while (i < n) {
+				int64_t song = t->song_frame_at(block + at + i);
+				if (song == DawKitTransport::NOT_PLAYING) {
+					if (last_song != DawKitTransport::NOT_PLAYING) {
+						for (const Sounding &s : sounding) off(s, i);
+						sounding.clear();
+					}
+					last_song = DawKitTransport::NOT_PLAYING;
+					i++;
+					while (i < n && t->song_frame_at(block + at + i) == DawKitTransport::NOT_PLAYING) i++;
+					continue;
+				}
+				if (last_song != DawKitTransport::NOT_PLAYING && song != last_song + 1) {
+					for (const Sounding &s : sounding) off(s, i);
+					sounding.clear();
+				}
+				int32_t j = i + 1;
+				while (j < n && t->song_frame_at(block + at + j) == song + (j - i)) j++;
+				int64_t from = song, to = song + (j - i); // [from, to)
+				// Endings first, so a note played again on the same key starts after it stops.
+				for (size_t k = 0; k < sounding.size();) {
+					if (sounding[k].end >= from && sounding[k].end < to) {
+						off(sounding[k], i + (int32_t)(sounding[k].end - from));
+						sounding[k] = sounding.back();
+						sounding.pop_back();
+					} else {
+						k++;
+					}
+				}
+				const std::vector<Note> &notes = inst->notes;
+				auto first = std::lower_bound(notes.begin(), notes.end(), from,
+						[](const Note &nt, int64_t f) { return nt.start < f; });
+				for (auto it = first; it != notes.end() && it->start < to; ++it) {
+					if (hold >= 0 && it->start < hold) continue;
+					dawkit::Event e;
+					e.kind = dawkit::Event::NOTE_ON;
+					e.key = it->key;
+					e.channel = it->channel;
+					e.value = it->velocity / 127.0;
+					e.offset = i + (int32_t)(it->start - from);
+					push(e);
+					Sounding s{ it->key, it->channel, it->end };
+					if (it->end < to) {
+						// A note shorter than what is left of the run ends in it.
+						off(s, i + (int32_t)(it->end - from));
+					} else if (sounding.size() < sounding.capacity()) {
+						sounding.push_back(s);
+					}
+				}
+				last_song = to - 1;
+				i = j;
+			}
+			std::stable_sort(events.begin(), events.end(),
+					[](const dawkit::Event &a, const dawkit::Event &b) { return a.offset < b.offset; });
+			dawkit::Transport where;
+			t->describe(block + at, where);
+			if ((int32_t)silence.size() < block_size) {
+				silence.assign(block_size, 0.0f);
+			}
+			const float *in[2] = { silence.data(), silence.data() };
+			float *out[2] = { made_l.data() + at, made_r.data() + at };
+			p->run(in, out, n, events.data(), (int)events.size(), where);
+			if (p->output_channels() == 1) {
+				std::copy(made_l.begin() + at, made_l.begin() + at + n, made_r.begin() + at);
+			}
+		}
+	}
+	for (int32_t i = 0; i < frames; i++) {
+		buffer[i].left += made_l[i];
+		buffer[i].right += made_r[i];
+	}
+}
+
 void DawKitLane::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_instrument", "plugin"), &DawKitLane::set_instrument);
+	ClassDB::bind_method(D_METHOD("get_instrument"), &DawKitLane::get_instrument);
+	ClassDB::bind_method(D_METHOD("set_notes", "notes"), &DawKitLane::set_notes);
+	ClassDB::bind_method(D_METHOD("note_count"), &DawKitLane::note_count);
 	ClassDB::bind_method(D_METHOD("set_transport", "transport"), &DawKitLane::set_transport);
 	ClassDB::bind_method(D_METHOD("get_transport"), &DawKitLane::get_transport);
 	ClassDB::bind_method(D_METHOD("set_clips", "clips"), &DawKitLane::set_clips);
@@ -140,6 +313,7 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 	Ref<DawKitTransport> t = lane->get_transport();
 	int64_t block = t->claim_block(seen, frames);
 	if (!t->is_playing()) {
+		lane->mix_instrument(block, buffer, frames);
 		return frames;
 	}
 	std::shared_ptr<const DawKitLane::Clips> clips = lane->snapshot();
@@ -187,5 +361,6 @@ int32_t DawKitLanePlayback::_mix(AudioFrame *buffer, float rate_scale, int32_t f
 		buffer[i].left = l;
 		buffer[i].right = r;
 	}
+	lane->mix_instrument(block, buffer, frames);
 	return frames;
 }

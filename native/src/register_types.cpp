@@ -1,4 +1,5 @@
 #include "dawkit_lane.h"
+#include "dawkit_plugin.h"
 #include "dawkit_transport.h"
 
 #include <gdextension_interface.h>
@@ -15,6 +16,11 @@ static void initialize_dawkit(ModuleInitializationLevel level) {
 	GDREGISTER_CLASS(DawKitTransport);
 	GDREGISTER_CLASS(DawKitLane);
 	GDREGISTER_CLASS(DawKitLanePlayback);
+	GDREGISTER_CLASS(DawKitPlugin);
+	GDREGISTER_CLASS(DawKitPluginEffect);
+	GDREGISTER_CLASS(DawKitPluginEffectInstance);
+	// Plugins are made, and their windows run, on this thread.
+	dawkit::set_main_thread();
 }
 
 static void uninitialize_dawkit(ModuleInitializationLevel level) {
