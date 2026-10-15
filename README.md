@@ -162,4 +162,4 @@ No hand-written code.
 
 ## Licence
 
-Proprietary. See LICENSE.
+MIT. See LICENSE. Third-party material is listed in THIRD_PARTY_NOTICES.md.

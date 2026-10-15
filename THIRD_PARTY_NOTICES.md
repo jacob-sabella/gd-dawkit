@@ -1,6 +1,6 @@
 # Third-party notices
 
-dawkit's own code is proprietary (see LICENSE). It contains no third-party code. The material
+dawkit's own code is MIT licensed (see LICENSE). It contains no third-party code. The material
 below ships only in `tests/`, is used only by dawkit's own checks, and is not part of the addon
 (`addons/dawkit`) that is distributed.
 
