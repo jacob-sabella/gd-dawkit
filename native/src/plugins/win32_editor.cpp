@@ -301,7 +301,7 @@ bool EditorWindow::capture(std::vector<uint8_t> &rgba, int &w, int &h, bool &sam
 
 // The deepest window under (x, y) of ours, and the point in its own client coordinates. Ready to
 // be worked: subclassed, and the window the pointer was in before told it has left.
-uintptr_t EditorWindow::under(int x, int y, int &cx, int &cy) {
+uintptr_t EditorWindow::under(int x, int y, int &cx, int &cy, int &rx, int &ry) {
 	HWND w = hwnd(holder);
 	POINT p{ x, y };
 	for (int i = 0; i < 16; i++) {
@@ -312,6 +312,10 @@ uintptr_t EditorWindow::under(int x, int y, int &cx, int &cy) {
 	}
 	cx = p.x;
 	cy = p.y;
+	POINT screen{ x, y };
+	ClientToScreen(hwnd(holder), &screen);
+	rx = screen.x;
+	ry = screen.y;
 	subclass(w);
 	if (target && target != (uintptr_t)w && IsWindow(hwnd(target))) {
 		PostMessageW(hwnd(target), leave_message(), 0, 0);
@@ -322,7 +326,7 @@ uintptr_t EditorWindow::under(int x, int y, int &cx, int &cy) {
 
 void EditorWindow::pointer_move(int x, int y) {
 	if (!holder) return;
-	int cx, cy;
+	int cx, cy, rx, ry;
 	HWND w;
 	if (entered && held) {
 		w = hwnd(entered);
@@ -332,15 +336,15 @@ void EditorWindow::pointer_move(int x, int y) {
 		cx = p.x;
 		cy = p.y;
 	} else {
-		w = hwnd(under(x, y, cx, cy));
+		w = hwnd(under(x, y, cx, cy, rx, ry));
 	}
 	PostMessageW(w, WM_MOUSEMOVE, held_flags(held), MAKELPARAM(cx, cy));
 }
 
 void EditorWindow::send_button(int x, int y, int button, bool down) {
 	if (!holder) return;
-	int cx, cy;
-	HWND w = hwnd(under(x, y, cx, cy));
+	int cx, cy, rx, ry;
+	HWND w = hwnd(under(x, y, cx, cy, rx, ry));
 	if (!down && entered) {
 		w = hwnd(entered);
 		POINT p{ x, y };
@@ -363,8 +367,8 @@ void EditorWindow::pointer_button(int x, int y, int button, bool down) {
 
 void EditorWindow::wheel(int x, int y, int notches) {
 	if (!holder || notches == 0) return;
-	int cx, cy;
-	HWND w = hwnd(under(x, y, cx, cy));
+	int cx, cy, rx, ry;
+	HWND w = hwnd(under(x, y, cx, cy, rx, ry));
 	// The wheel's point is on the screen, not in the window.
 	POINT p{ x, y };
 	ClientToScreen(hwnd(holder), &p);

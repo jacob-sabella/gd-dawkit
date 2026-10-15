@@ -100,11 +100,25 @@ without them still loads the engine, with fewer plugins. Android builds with hos
   PrintWindow, and the mouse is posted to the plugin's window under the point. Because nothing
   is under the real cursor there, the engine:
   - holds back the mouse-leave Windows reports at once;
-  - hands back the mouse capture a plugin takes on a click, so the game's own window keeps the
+  - hands back the mouse capture a plugin takes on a click, so the host's own window keeps the
     real mouse;
   - steers `WindowFromPoint` for the whole process (a 12-byte jump at user32's, to the engine's,
     which answers for its own windows and asks `win32u!NtUserWindowFromPoint` for everything else).
   JUCE plugins take no click without that last one.
+- **Menus.** On Linux a plugin's dropdowns and right-click menus are windows of their own on the
+  desktop. One that maps just after a click into a plugin's window, from the process drawing it,
+  and is not a window of its own (an ordinary window or a dialog) is drawn over the plugin's
+  picture where it opened, and the pointer and keys go to it; a click outside it closes it.
+  Override-redirect menus are moved into a window of the engine's, off every screen. A menu Wine
+  draws (yabridge's plugins) is placed by the window manager and closes if it is moved or focused,
+  so on Hyprland, while a plugin's window is being clicked, the engine turns on a rule through
+  `hyprctl eval` that puts an `.exe`'s untitled window, or one titled "menu", on the special
+  workspace `dawkit`, unfocused. The rule switches itself off 4 seconds after the last click. A
+  Wine plugin also closes its menus when its window is not the active one, so from a click until
+  its menus close the engine names the plugin's window in `_NET_ACTIVE_WINDOW` (a thread of its
+  own names it again whenever the window manager changes it).
+  Other Wine programs' menus opened in that time go there too. Set `DAWKIT_NO_HYPRLAND_RULE` to
+  leave the window manager alone; such menus then appear wherever it puts them.
 
 The tests use a CLAP built for them (`native/test_plugin`: a gain and a sine instrument).
 
