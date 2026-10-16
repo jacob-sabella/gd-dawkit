@@ -20,6 +20,12 @@ var rate := 48000.0
 
 var _sine := PackedFloat32Array()
 var _sustain := false
+## Pitch wheel as a ratio on every voice's pitch (range of two semitones each way), and the level
+## the volume (7) and expression (11) controllers set, 0-1.
+var _bend := 1.0
+var _volume := 1.0
+var _expression := 1.0
+const BEND_SEMITONES := 2.0
 var _held := PackedByteArray()
 var _pitch := PackedInt32Array()
 var _phase := PackedFloat32Array()
@@ -60,7 +66,8 @@ func _init(sample_rate := 48000.0) -> void:
 
 ## A clip's notes -- flat [on, off, pitch, velocity, channel] repeating, seconds from the clip's
 ## start -- as `seconds` of stereo sound plus the tail, each note on its own sample.
-static func render_notes(notes: PackedFloat64Array, seconds: float, sample_rate := 48000.0) -> PackedVector2Array:
+static func render_notes(notes: PackedFloat64Array, seconds: float, sample_rate := 48000.0,
+		controls := PackedFloat64Array()) -> PackedVector2Array:
 	var synth := DawKitTine.new(sample_rate)
 	# Every note's on and off as [frame, on?, pitch, velocity], in time order (offs first at a tie,
 	# so a note repeated back to back is struck again rather than cut).
@@ -72,6 +79,10 @@ static func render_notes(notes: PackedFloat64Array, seconds: float, sample_rate 
 		var off := minf(notes[i + 1], seconds)
 		events.append([int(round(maxf(on, 0.0) * sample_rate)), 1, int(notes[i + 2]), int(notes[i + 3])])
 		events.append([int(round(off * sample_rate)), 0, int(notes[i + 2]), 0])
+	# Controller events (DawKitClip.controls) are [frame, -1, kind, value], ahead of a note at their frame.
+	for i in range(0, controls.size() - 3, 4):
+		if controls[i] < seconds:
+			events.append([int(round(maxf(controls[i], 0.0) * sample_rate)), -1, int(controls[i + 1]), controls[i + 2]])
 	events.sort_custom(func(a, b): return a[0] < b[0] or (a[0] == b[0] and a[1] < b[1]))
 	var total := int(ceil((seconds + TAIL_SECONDS) * sample_rate))
 	var out := PackedVector2Array()
@@ -81,7 +92,9 @@ static func render_notes(notes: PackedFloat64Array, seconds: float, sample_rate 
 		if frame > at:
 			out.append_array(synth.render(frame - at))
 			at = frame
-		if e[1] == 1:
+		if e[1] == -1:
+			synth.control(e[2], e[3])
+		elif e[1] == 1:
 			synth.note_on(e[2], e[3])
 		else:
 			synth.note_off(e[2])
@@ -131,6 +144,25 @@ func note_off(pitch: int) -> void:
 				_damp(v)
 
 
+## The pitch wheel, -8192 to 8191 (DawKitClip.PITCH_BEND), moving every sounding note.
+func pitch_bend(value: float) -> void:
+	_bend = pow(2.0, clampf(value, DawKitClip.BEND_MIN, DawKitClip.BEND_MAX) / 8192.0 * BEND_SEMITONES / 12.0)
+
+
+## A controller: 64 the sustain pedal, 7 volume, 11 expression, and DawKitClip.PITCH_BEND the wheel.
+## Others are not this instrument's.
+func control(kind: int, value: float) -> void:
+	match kind:
+		64:
+			sustain(value >= 64.0)
+		7:
+			_volume = clampf(value / 127.0, 0.0, 1.0)
+		11:
+			_expression = clampf(value / 127.0, 0.0, 1.0)
+		DawKitClip.PITCH_BEND:
+			pitch_bend(value)
+
+
 func sustain(down: bool) -> void:
 	_sustain = down
 	if not down:
@@ -167,7 +199,7 @@ func render(count: int) -> PackedVector2Array:
 			continue
 		var phase := _phase[v]
 		var tine := _tine[v]
-		var inc := _inc[v]
+		var inc := _inc[v] * _bend
 		var index := _index[v]
 		var decay := _decay[v] * _release[v]
 		var attack := _attack[v]
@@ -197,8 +229,9 @@ func render(count: int) -> PackedVector2Array:
 		_attack[v] = attack
 		if amp < SILENT:
 			_pitch[v] = -1
+	var level := _volume * _expression
 	for i in count:
-		var f := out[i]
+		var f := out[i] * level
 		out[i] = Vector2(f.x / (1.0 + absf(f.x)), f.y / (1.0 + absf(f.y)))
 	return out
 

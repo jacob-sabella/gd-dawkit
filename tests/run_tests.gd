@@ -13,6 +13,7 @@ func _initialize() -> void:
 	_test_a_looped_clip_plays_its_loop()
 	_test_a_comp_picks_which_take_sounds()
 	_test_a_clip_keeps_controller_and_pitch_bend_lanes()
+	_test_the_instrument_follows_the_wheel_the_pedal_and_the_volume()
 	_test_a_frozen_track_can_be_thawed_and_is_saved()
 	_test_folders_route_to_their_parent()
 	_test_broken_references_are_reported()
@@ -1482,6 +1483,29 @@ func _test_a_frozen_track_can_be_thawed_and_is_saved() -> void:
 		check("the same, frozen (%s)" % p.first_difference(opened["project"]), p.same_as(opened["project"]))
 	check("thawed, the track is as it was", kick.unfreeze() and not kick.is_frozen()
 			and kick.to_dict() == before and kick.effects.size() == fx_before)
+
+
+func _test_the_instrument_follows_the_wheel_the_pedal_and_the_volume() -> void:
+	var note := PackedFloat64Array([0.0, 0.5, 69, 100, 0])
+	var plain := DawKitTine.render_notes(note, 1.0, 48000.0)
+	var same := DawKitTine.render_notes(note, 1.0, 48000.0, PackedFloat64Array())
+	check("with no controls it is as it was", plain == same)
+	var up := DawKitTine.render_notes(note, 1.0, 48000.0, PackedFloat64Array([0.0, DawKitClip.PITCH_BEND, 8191.0, 0]))
+	# 440 Hz up two semitones is 493.9: more zero crossings in the same stretch.
+	var crossings := func(f: PackedVector2Array) -> int:
+		var n := 0
+		for i in range(1000, 20000):
+			if f[i - 1].x < 0.0 and f[i].x >= 0.0:
+				n += 1
+		return n
+	check("the wheel up raises the pitch (%d vs %d)" % [crossings.call(up), crossings.call(plain)], crossings.call(up) > crossings.call(plain))
+	var quiet := DawKitTine.render_notes(note, 1.0, 48000.0, PackedFloat64Array([0.0, 7, 32, 0]))
+	check("volume 32 is quieter (%.3f vs %.3f)" % [_loudest(quiet, 20000, 30000), _loudest(plain, 20000, 30000)],
+			_loudest(quiet, 20000, 30000) < _loudest(plain, 20000, 30000) * 0.5)
+	var pedal := DawKitTine.render_notes(note, 1.0, 48000.0, PackedFloat64Array([0.0, 64, 127, 0]))
+	check("the pedal holds the note past its end (%.4f vs %.4f)" % [_loudest(pedal, int(0.8 * 48000), int(0.9 * 48000)), _loudest(plain, int(0.8 * 48000), int(0.9 * 48000))],
+			_loudest(pedal, int(0.8 * 48000), int(0.9 * 48000)) > _loudest(plain, int(0.8 * 48000), int(0.9 * 48000)) * 5.0)
+	check("a controller that is not its own changes nothing", DawKitTine.render_notes(note, 1.0, 48000.0, PackedFloat64Array([0.0, 1, 100, 0])) == plain)
 
 
 func _test_a_clip_keeps_controller_and_pitch_bend_lanes() -> void:
