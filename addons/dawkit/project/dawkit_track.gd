@@ -147,3 +147,14 @@ func playing_clips() -> Array[DawKitClip]:
 				out.append(c.slice(from, to))
 	out.sort_custom(func(a, b): return a.start < b.start)
 	return out
+
+
+## The comp made plain: the clips as they sound, every one on the first lane, and no comp.
+func flatten_comp() -> void:
+	if comp.is_empty():
+		return
+	var flat := playing_clips()
+	for c in flat:
+		c.lane = 0
+	clips.assign(flat)
+	comp = []

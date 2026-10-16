@@ -1489,5 +1489,9 @@ func _test_a_comp_picks_which_take_sounds() -> void:
 	var cut := m.slice(11.0, 14.0)
 	check("a sliced MIDI clip keeps the notes in its window, counted from its start (%s)" % [cut.notes],
 			cut.notes == PackedFloat64Array([0.0, 0.5, 60, 100, 0, 1.5, 2.5, 64, 90, 0]))
+	var flat := DawKitTrack.from_dict(t.to_dict())
+	flat.flatten_comp()
+	check("flattened, the comp is gone and every clip is on the first lane, as many as sounded",
+			flat.comp.is_empty() and flat.clips.size() == 4 and flat.clips.all(func(c): return c.lane == 0))
 	var back := DawKitTrack.from_dict(t.to_dict())
 	check("lanes and the comp survive the plain form", back.comp == t.comp and back.clips[1].lane == 1)
