@@ -95,7 +95,8 @@ class _Writer:
 		_track(structure, p.master)
 		_arrangement(root)
 		extras["project"] = {"loop_on": p.loop_on, "loop_start": p.loop_start,
-				"loop_end": p.loop_end, "metronome": p.metronome, "length": p.length}
+				"loop_end": p.loop_end, "metronome": p.metronome, "length": p.length,
+				"vca": p.vca.map(func(v): return float(v))}
 		return root
 
 	func _track(parent: DawKitXml, t: DawKitTrack) -> void:
@@ -446,6 +447,8 @@ class _Reader:
 		_p.loop_start = float(px.get("loop_start", 0.0))
 		_p.loop_end = float(px.get("loop_end", 0.0))
 		_p.metronome = bool(px.get("metronome", false))
+		for v in px.get("vca", []):
+			_p.vca.append(float(v))
 		_p.length = float(px.get("length", _last_clip_end()))
 		return _p
 

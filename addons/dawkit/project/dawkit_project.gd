@@ -26,6 +26,9 @@ var time_signature_points: Array = []
 ## Seconds: how far the timeline runs, which can be past the last clip.
 var length := 0.0
 var metronome := false
+## A VCA per track group: group g (1 and up) has a trim in decibels at `vca[g - 1]`, added to
+## the fader of every track in it without passing any audio of its own. Empty or short means 0 dB.
+var vca: Array = []
 var loop_on := false
 var loop_start := 0.0
 var loop_end := 0.0
@@ -159,6 +162,7 @@ func to_dict() -> Dictionary:
 			"time_signature_points": time_signature_points.map(func(pt): return [float(pt[0]), int(pt[1]), int(pt[2])]),
 			"length": length,
 			"metronome": metronome,
+			"vca": vca.map(func(v): return float(v)),
 			"loop": {"on": loop_on, "start": loop_start, "end": loop_end},
 			"markers": markers.map(func(m): return m.to_dict()),
 			"regions": regions.map(func(r): return r.to_dict()),
@@ -178,6 +182,8 @@ static func from_dict(d: Dictionary) -> DawKitProject:
 		p.time_signature_points.append([float(pt[0]), int(pt[1]), int(pt[2])])
 	p.length = float(d.get("length", 0.0))
 	p.metronome = bool(d.get("metronome", false))
+	for v in d.get("vca", []):
+		p.vca.append(float(v))
 	var loop: Dictionary = d.get("loop", {})
 	p.loop_on = bool(loop.get("on", false))
 	p.loop_start = float(loop.get("start", 0.0))

@@ -69,6 +69,7 @@ static func sample() -> DawKitProject:
 	p.time_signature = Vector2i(6, 8)
 	p.length = 182.25
 	p.metronome = true
+	p.vca = [-3.5, 0.0, 2.25]
 	p.loop_on = true
 	p.loop_start = 8.0
 	p.loop_end = 16.5
