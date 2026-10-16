@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_a_difference_is_found_and_named()
 	_test_a_looped_clip_plays_its_loop()
 	_test_a_comp_picks_which_take_sounds()
+	_test_a_frozen_track_can_be_thawed_and_is_saved()
 	_test_folders_route_to_their_parent()
 	_test_broken_references_are_reported()
 	_test_a_project_survives_a_dawproject_file()
@@ -1449,6 +1450,36 @@ func _test_a_plugin_effect_runs_once_for_every_bus_it_is_on() -> void:
 	close("which is the effect's sound", absf(level), 0.25, 0.001)
 	e.set_bypass(true)
 	close("bypassed, the sound goes through untouched", e.process_as(0, block)[0].x, block[0].x)
+
+
+func _test_a_frozen_track_can_be_thawed_and_is_saved() -> void:
+	var p := sample()
+	var kick: DawKitTrack = p.tracks[0]
+	for t in p.tracks:
+		if t.comp.size() > 0:
+			kick = t
+	var before := kick.to_dict()
+	var fx_before := kick.effects.size()
+	var bounce := DawKitClip.new()
+	bounce.start = 0.0
+	bounce.length = 40.0
+	bounce.source = "audio/take1.wav"
+	check("an unfrozen track is not frozen", not kick.is_frozen() and not kick.unfreeze())
+	check("it freezes", kick.freeze(bounce) and kick.is_frozen())
+	check("its clips are the one rendered clip, with no comp and no effects",
+			kick.clips.size() == 1 and kick.comp.is_empty() and kick.effects.is_empty())
+	check("a frozen track will not freeze again", not kick.freeze(bounce))
+	var plain := DawKitTrack.from_dict(kick.to_dict())
+	check("frozen survives the plain form", plain.is_frozen() and plain.to_dict() == kick.to_dict())
+	var file := _tmp("frozen.dawproject")
+	var warnings := DawKitDawproject.save(p, file, _media_root())
+	check("a project with a frozen track saves (%s)" % [warnings], warnings.is_empty())
+	var opened := DawKitDawproject.open(file, _tmp("frozen_opened"))
+	check("and opens (%s)" % opened["error"], opened["project"] != null)
+	if opened["project"] != null:
+		check("the same, frozen (%s)" % p.first_difference(opened["project"]), p.same_as(opened["project"]))
+	check("thawed, the track is as it was", kick.unfreeze() and not kick.is_frozen()
+			and kick.to_dict() == before and kick.effects.size() == fx_before)
 
 
 func _test_a_comp_picks_which_take_sounds() -> void:

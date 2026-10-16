@@ -184,6 +184,12 @@ class _Writer:
 			extras["tracks"][t.id]["clips"] = shapes
 			if not t.comp.is_empty():
 				extras["tracks"][t.id]["comp"] = t.comp.map(func(s): return s.duplicate())
+			if t.is_frozen():
+				extras["tracks"][t.id]["frozen"] = t.frozen.duplicate(true)
+				# What it was is not in the arrangement, so its sound goes in the zip by itself.
+				for c in t.frozen.get("clips", []):
+					if not str(c.get("source", "")).is_empty():
+						_media(str(c["source"]))
 		if not p.markers.is_empty():
 			var markers := arr.add("Markers", {"timeUnit": "seconds", "id": "markers"})
 			for m in p.markers:
@@ -676,6 +682,13 @@ class _Reader:
 			for s in extras.get("tracks", {}).get(t.id, {}).get("comp", []):
 				if s is Array and s.size() == 3 and float(s[1]) > float(s[0]):
 					t.comp.append([float(s[0]), float(s[1]), maxi(int(s[2]), 0)])
+			var fz = extras.get("tracks", {}).get(t.id, {}).get("frozen", {})
+			t.frozen = DawKitTrack.clean_frozen(fz)
+			if not t.frozen.is_empty():
+				for c in t.frozen["clips"]:
+					var src := str(c.get("source", ""))
+					if not src.is_empty() and not src.is_absolute_path() and not src in wanted_files:
+						wanted_files.append(src)
 			for i in mini(shapes.size(), t.clips.size()):
 				var c := t.clips[i]
 				var sh: Dictionary = shapes[i]
