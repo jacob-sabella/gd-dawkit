@@ -30,6 +30,7 @@ func _initialize() -> void:
 	_test_ogg_and_mp3_are_decoded()
 	_test_flac_decodes_to_its_last_bit()
 	_test_flac_is_written_to_its_last_bit()
+	_test_sound_is_stretched_and_shifted()
 	_test_lanes_play_on_the_same_sample()
 	_test_what_cannot_be_read_says_why()
 	_test_the_click_is_on_the_beat()
@@ -646,6 +647,58 @@ func _test_ogg_and_mp3_are_decoded() -> void:
 				crossings += 1
 		close("%s is 440 Hz" % name, crossings / 2.0 / ((to - from) / rate), 440.0, 6.0)
 		close("%s is at half scale" % name, loudest, 0.5, 0.05)
+
+
+## Cycles per second of a tone, from its rising zero crossings.
+static func _frequency(samples: PackedFloat32Array, rate: int) -> float:
+	var crossings := 0
+	var first := -1
+	var last := 0
+	for i in range(1, samples.size()):
+		if samples[i - 1] < 0.0 and samples[i] >= 0.0:
+			crossings += 1
+			if first < 0:
+				first = i
+			last = i
+	return (crossings - 1) * float(rate) / maxf(last - first, 1.0) if crossings > 2 else 0.0
+
+
+func _test_sound_is_stretched_and_shifted() -> void:
+	var rate := 48000
+	var tone := PackedFloat32Array()
+	for i in rate * 2:
+		tone.append(sin(TAU * 440.0 * i / rate) * 0.5)
+	var slow := DawKitStretch.stretch(tone, 1, rate, 1.5)
+	check("stretched to 1.5 times as long", slow.size() == int(round(tone.size() * 1.5)))
+	close("and still 440 Hz", _frequency(slow.slice(rate / 4, slow.size() - rate / 4), rate), 440.0, 6.0)
+	var fast := DawKitStretch.stretch(tone, 1, rate, 0.5)
+	check("squeezed to half", fast.size() == tone.size() / 2)
+	close("still 440 Hz", _frequency(fast.slice(rate / 8, fast.size() - rate / 8), rate), 440.0, 6.0)
+	var loudest := 0.0
+	for v in slow.slice(rate / 4, slow.size() - rate / 4):
+		loudest = maxf(loudest, absf(v))
+	close("at the same level", loudest, 0.5, 0.06)
+	var up := DawKitStretch.pitch_shift(tone, 1, rate, 12.0)
+	check("an octave up is as long as it was", up.size() == tone.size())
+	close("and 880 Hz", _frequency(up.slice(rate / 4, up.size() - rate / 4), rate), 880.0, 12.0)
+	var down := DawKitStretch.pitch_shift(tone, 1, rate, -5.0)
+	close("a fourth down is 329.6 Hz", _frequency(down.slice(rate / 4, down.size() - rate / 4), rate), 440.0 * pow(2.0, -5.0 / 12.0), 6.0)
+	var stereo := PackedFloat32Array()
+	for i in rate:
+		stereo.append(sin(TAU * 300.0 * i / rate) * 0.4)
+		stereo.append(sin(TAU * 500.0 * i / rate) * 0.4)
+	var wide := DawKitStretch.stretch(stereo, 2, rate, 2.0)
+	var left := PackedFloat32Array()
+	var right := PackedFloat32Array()
+	for i in range(rate / 4, wide.size() / 2 - rate / 4):
+		left.append(wide[i * 2])
+		right.append(wide[i * 2 + 1])
+	check("stereo keeps its length", wide.size() == stereo.size() * 2)
+	close("and each side its own pitch (left)", _frequency(left, rate), 300.0, 6.0)
+	close("(right)", _frequency(right, rate), 500.0, 8.0)
+	check("unchanged at ratio 1, and no shift at 0", DawKitStretch.stretch(tone, 1, rate, 1.0) == tone
+			and DawKitStretch.pitch_shift(tone, 1, rate, 0.0) == tone)
+	check("a speck of sound is only resampled", DawKitStretch.stretch(PackedFloat32Array([0.1, 0.2, 0.3]), 1, rate, 2.0).size() == 6)
 
 
 func _test_flac_is_written_to_its_last_bit() -> void:

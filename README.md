@@ -57,6 +57,12 @@ played wherever the transport says the song is, on the track's own bus. The test
 a block at a time in alternating order, and a third that joined late, and find a clip's first
 sample on the same frame in all three.
 
+## Time-stretch and pitch-shift
+
+`DawKitStretch.stretch(samples, channels, rate, ratio)` changes a sound's length (0.25 to 4 times) and keeps its pitch
+(WSOLA); `pitch_shift(samples, channels, rate, semitones)` changes its pitch (±24) and keeps its length. Offline, on
+interleaved floats; one grain offset for all channels, so a stereo image holds. Not yet played live by the lanes.
+
 ## Metronome
 
 `DawKitMetronome.bar(tempo, beats, rate)` is one bar of clicks as a looping stream, each click
