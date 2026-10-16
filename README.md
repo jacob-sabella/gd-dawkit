@@ -31,6 +31,8 @@ studio game) is the first host.
 
 ## Audio files
 
+`DawKitFlacWriter.write(path, samples, channels, rate, bits)` writes 16 or 24-bit FLAC (independent channels, fixed predictors, Rice coding; no LPC or stereo decorrelation, so about a fifth bigger than the reference encoder; exact, with the MD5, and `flac -t` accepts it).
+
 `DawKitAudioFile.read(path)` reads WAV (8/16/24/32-bit integer, 32/64-bit float, plain or
 extensible), AIFF and AIFF-C, FLAC, Ogg Vorbis and MP3 into samples, folding more than two channels to
 stereo. `bring_in(source, dest)` puts a file in a project's media: copied untouched when the engine

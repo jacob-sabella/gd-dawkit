@@ -29,6 +29,7 @@ func _initialize() -> void:
 	_test_a_file_is_brought_in_as_the_engine_plays_it()
 	_test_ogg_and_mp3_are_decoded()
 	_test_flac_decodes_to_its_last_bit()
+	_test_flac_is_written_to_its_last_bit()
 	_test_lanes_play_on_the_same_sample()
 	_test_what_cannot_be_read_says_why()
 	_test_the_click_is_on_the_beat()
@@ -645,6 +646,47 @@ func _test_ogg_and_mp3_are_decoded() -> void:
 				crossings += 1
 		close("%s is 440 Hz" % name, crossings / 2.0 / ((to - from) / rate), 440.0, 6.0)
 		close("%s is at half scale" % name, loudest, 0.5, 0.05)
+
+
+func _test_flac_is_written_to_its_last_bit() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	for spec in [[16, 2, 10000], [24, 2, 9000], [16, 1, 4096], [24, 2, 5]]:
+		var bits: int = spec[0]
+		var channels: int = spec[1]
+		var frames: int = spec[2]
+		var top := (1 << (bits - 1)) - 1
+		var ints := PackedInt64Array()
+		for i in frames:
+			for c in channels:
+				ints.append(int(sin(i * 0.05 * (c + 1)) * top * 0.6) + rng.randi_range(-40, 40))
+		var bytes := DawKitFlacWriter.encode_ints(ints, channels, 44100, bits)
+		var back := DawKitFlac.decode_ints(bytes)
+		check("%d-bit x%d, %d frames, comes back exactly (%s)" % [bits, channels, frames, back.get("error", "")],
+				str(back.get("error", "")).is_empty() and back["samples"] == ints and back["channels"] == channels
+				and back["rate"] == 44100 and back["bits"] == bits)
+		if frames > 100:
+			check("and is smaller than the sound it holds", bytes.size() < ints.size() * bits / 8)
+	var quiet := PackedInt64Array()
+	quiet.resize(8000)
+	check("silence is a constant subframe and tiny", DawKitFlacWriter.encode_ints(quiet, 2, 48000, 16).size() < 100)
+	var loud := PackedInt64Array()
+	for i in 6000:
+		loud.append(rng.randi_range(-32768, 32767))
+	var loud_back := DawKitFlac.decode_ints(DawKitFlacWriter.encode_ints(loud, 2, 48000, 16))
+	check("white noise falls back to verbatim, still exact", loud_back.get("samples") == loud)
+	check("a shape FLAC cannot hold is refused", DawKitFlacWriter.encode_ints(loud, 0, 48000, 16).is_empty()
+			and DawKitFlacWriter.encode_ints(PackedInt64Array([1, 2, 3]), 2, 48000, 16).is_empty())
+	var floats := PackedFloat32Array()
+	for i in 6000:
+		floats.append(sin(i * 0.03) * 0.5)
+	var file := _tmp("render.flac")
+	check("written from floats", DawKitFlacWriter.write(file, floats, 2, 48000, 16) == OK)
+	var read := DawKitAudioFile.read(file)
+	check("and read back by the engine's own reader (%s)" % [read.keys()], not read.has("error") or str(read["error"]).is_empty())
+	var out: Array = []
+	var code := OS.execute("flac", ["-t", "-s", file], out, true)
+	check("the reference decoder accepts it (exit %d)" % code, code == 0 or code == -1)
 
 
 ## Each fixture was encoded by the reference `flac` 1.5 from the WAV beside it -- a tone, a burst
