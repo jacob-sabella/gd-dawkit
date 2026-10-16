@@ -55,6 +55,17 @@ var notes := PackedFloat64Array()
 
 const NOTE_WIDTH := 5
 
+## A MIDI clip's controller events, flat: [time, kind, value, channel] repeating, in time order,
+## seconds from the clip's left edge. `kind` is a controller number 0-127 (value 0-127), PITCH_BEND
+## (value -8192 to 8191, centre 0) or AFTERTOUCH (channel pressure, value 0-127).
+var controls := PackedFloat64Array()
+
+const CONTROL_WIDTH := 4
+const PITCH_BEND := 128
+const AFTERTOUCH := 129
+const BEND_MIN := -8192.0
+const BEND_MAX := 8191.0
+
 
 func end() -> float:
 	return start + length
@@ -132,6 +143,16 @@ func slice(from: float, to: float) -> DawKitClip:
 				continue
 			kept.append_array(PackedFloat64Array([maxf(on, 0.0), minf(off, c.length), notes[o + 2], notes[o + 3], notes[o + 4]]))
 		c.notes = kept
+	if not controls.is_empty():
+		var events := PackedFloat64Array()
+		var moved := from - start
+		for i in control_count():
+			var o := i * CONTROL_WIDTH
+			var at := controls[o] - moved
+			if at < 0.0 or at >= c.length:
+				continue
+			events.append_array(PackedFloat64Array([at, controls[o + 1], controls[o + 2], controls[o + 3]]))
+		c.controls = events
 	return c
 
 
@@ -140,7 +161,7 @@ func to_dict() -> Dictionary:
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
 			"fade_shape": fade_shape, "fade_out_shape": fade_out_shape, "gain_db": gain_db, "source": source, "source_offset": source_offset,
 			"loop_start": loop_start, "loop_end": loop_end,
-			"notes": Array(notes)}
+			"notes": Array(notes), "controls": Array(controls)}
 
 
 static func from_dict(d: Dictionary) -> DawKitClip:
@@ -164,4 +185,66 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.loop_start = float(d.get("loop_start", 0.0))
 	c.loop_end = float(d.get("loop_end", 0.0))
 	c.notes = PackedFloat64Array(d.get("notes", []))
+	c.controls = clean_controls(d.get("controls", []))
 	return c
+
+
+func control_count() -> int:
+	return controls.size() / CONTROL_WIDTH
+
+
+## The events of `kind` (a controller number, PITCH_BEND or AFTERTOUCH) on `channel`, as
+## [time, value] pairs in time order.
+func control_lane(kind: int, channel := 0) -> Array:
+	var out: Array = []
+	for i in control_count():
+		var o := i * CONTROL_WIDTH
+		if int(controls[o + 1]) == kind and int(controls[o + 3]) == channel:
+			out.append([controls[o], controls[o + 2]])
+	return out
+
+
+## The value of the lane `kind` on `channel` at `t` seconds into the clip: the last event at or
+## before it, or `default` before the first.
+func control_at(kind: int, t: float, channel := 0, default := 0.0) -> float:
+	var v := default
+	for e in control_lane(kind, channel):
+		if e[0] > t:
+			break
+		v = e[1]
+	return v
+
+
+## The lane `kind` on `channel` made `points` ([time, value] pairs): the lane's old events go, the
+## other lanes stay. Empty points take the lane away.
+func set_control_lane(kind: int, points: Array, channel := 0) -> void:
+	var out := PackedFloat64Array()
+	for i in control_count():
+		var o := i * CONTROL_WIDTH
+		if not (int(controls[o + 1]) == kind and int(controls[o + 3]) == channel):
+			out.append_array(controls.slice(o, o + CONTROL_WIDTH))
+	var arr := Array(out)
+	for p in points:
+		arr.append_array([float(p[0]), float(kind), float(p[1]), float(channel)])
+	controls = clean_controls(arr)
+
+
+## Controller events from loose data (a file, a peer), made safe: finite, a known kind, the value
+## in its range, a channel 0-15, in time order (events at one time keep their order).
+static func clean_controls(v: Variant) -> PackedFloat64Array:
+	var rows: Array = []
+	if not (v is Array or v is PackedFloat64Array or v is PackedFloat32Array):
+		return PackedFloat64Array()
+	for i in range(0, v.size() - CONTROL_WIDTH + 1, CONTROL_WIDTH):
+		var t := float(v[i])
+		var kind := int(v[i + 1])
+		var value := float(v[i + 2])
+		if not is_finite(t) or not is_finite(value) or t < 0.0 or kind < 0 or kind > AFTERTOUCH:
+			continue
+		value = clampf(value, BEND_MIN, BEND_MAX) if kind == PITCH_BEND else clampf(value, 0.0, 127.0)
+		rows.append([t, float(kind), value, float(clampi(int(v[i + 3]), 0, 15)), rows.size()])
+	rows.sort_custom(func(a, b): return a[0] < b[0] or (a[0] == b[0] and a[4] < b[4]))
+	var out := PackedFloat64Array()
+	for r in rows:
+		out.append_array(PackedFloat64Array([r[0], r[1], r[2], r[3]]))
+	return out

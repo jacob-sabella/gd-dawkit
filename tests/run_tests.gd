@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_a_difference_is_found_and_named()
 	_test_a_looped_clip_plays_its_loop()
 	_test_a_comp_picks_which_take_sounds()
+	_test_a_clip_keeps_controller_and_pitch_bend_lanes()
 	_test_a_frozen_track_can_be_thawed_and_is_saved()
 	_test_folders_route_to_their_parent()
 	_test_broken_references_are_reported()
@@ -112,6 +113,7 @@ static func sample() -> DawKitProject:
 	chords.length = 8.0
 	chords.name = "Chords"
 	chords.notes = PackedFloat64Array([0.0, 0.5, 60, 100, 0, 0.5, 1.0, 64, 90, 1])
+	chords.controls = PackedFloat64Array([0.0, 1, 0, 0, 0.25, 1, 64, 0, 0.5, 128, -4096.5, 1, 0.75, 129, 90, 0])
 	keys.clips.append(chords)
 	var verb := p.add_track("Verb")
 	var send := DawKitSend.new()
@@ -1480,6 +1482,30 @@ func _test_a_frozen_track_can_be_thawed_and_is_saved() -> void:
 		check("the same, frozen (%s)" % p.first_difference(opened["project"]), p.same_as(opened["project"]))
 	check("thawed, the track is as it was", kick.unfreeze() and not kick.is_frozen()
 			and kick.to_dict() == before and kick.effects.size() == fx_before)
+
+
+func _test_a_clip_keeps_controller_and_pitch_bend_lanes() -> void:
+	var c := DawKitClip.new()
+	c.start = 10.0
+	c.length = 4.0
+	c.set_control_lane(1, [[1.0, 20], [0.0, 0], [2.0, 120]])
+	c.set_control_lane(DawKitClip.PITCH_BEND, [[0.5, -2000.0], [1.5, 99999.0]], 3)
+	check("a lane is in time order (%s)" % [c.control_lane(1)], c.control_lane(1) == [[0.0, 0.0], [1.0, 20.0], [2.0, 120.0]])
+	check("a bend is clamped to 14 bits, on its channel", c.control_lane(DawKitClip.PITCH_BEND, 3) == [[0.5, -2000.0], [1.5, 8191.0]]
+			and c.control_lane(DawKitClip.PITCH_BEND).is_empty())
+	check("a value is the last event at or before it", c.control_at(1, 1.5) == 20.0 and c.control_at(1, 2.0) == 120.0
+			and c.control_at(7, 1.0, 0, 64.0) == 64.0)
+	c.set_control_lane(1, [])
+	check("an empty lane takes it away and leaves the others", c.control_lane(1).is_empty() and c.control_count() == 2)
+	check("a bad event is dropped", DawKitClip.clean_controls([1.0, 300, 5, 0, -1.0, 1, 5, 0, INF, 1, 5, 0, 2.0, 1, 500, 99]) == PackedFloat64Array([2.0, 1.0, 127.0, 15.0]))
+	var back := DawKitClip.from_dict(c.to_dict())
+	check("they survive the plain form", back.controls == c.controls)
+	c.set_control_lane(1, [[0.5, 10], [3.0, 30]])
+	var cut := c.slice(11.0, 13.0)
+	check("a slice leaves out what lies outside its window", cut.control_count() == 1 and cut.control_lane(DawKitClip.PITCH_BEND, 3) == [[0.5, 8191.0]])
+	var cut2 := c.slice(10.25, 13.5)
+	check("and moves the rest by what was cut off (%s)" % [cut2.control_lane(1)],
+			cut2.control_lane(1) == [[0.25, 10.0], [2.75, 30.0]] and cut2.control_lane(DawKitClip.PITCH_BEND, 3) == [[0.25, -2000.0], [1.25, 8191.0]])
 
 
 func _test_a_comp_picks_which_take_sounds() -> void:

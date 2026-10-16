@@ -178,7 +178,7 @@ class _Writer:
 			for c in t.clips:
 				_clip(clips, t, c)
 				shapes.append({"gain_db": c.gain_db, "colour": [c.colour.r, c.colour.g, c.colour.b, c.colour.a],
-						"start": c.start, "length": c.length, "notes": Array(c.notes),
+						"start": c.start, "length": c.length, "notes": Array(c.notes), "controls": Array(c.controls),
 						"locked": c.locked, "lane": c.lane, "reversed": c.reversed, "fade_shape": c.fade_shape,
 						"fade_out_shape": c.fade_out_shape})
 			extras["tracks"][t.id]["clips"] = shapes
@@ -707,6 +707,8 @@ class _Reader:
 						c.colour = Color(col[0], col[1], col[2], col[3])
 					# A note's end is written as its start plus a duration, which is not
 					# always the same number again; the exact notes stand in while they agree.
+					# Controller events are not in the XML at all.
+					c.controls = DawKitClip.clean_controls(sh.get("controls", []))
 					var exact_notes: Array = sh.get("notes", [])
 					if exact_notes.size() == c.notes.size() and _close_notes(c.notes, exact_notes):
 						c.notes = PackedFloat64Array(exact_notes)
