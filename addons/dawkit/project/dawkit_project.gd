@@ -152,6 +152,9 @@ func problems() -> PackedStringArray:
 					var parts: PackedStringArray = a.target.split(":")
 					if int(parts[1]) >= t.effects.size():
 						out.append("%s automates effect %s, which it does not have" % [t.id, parts[1]])
+				"enable":
+					if int(a.target.substr(7)) >= t.effects.size():
+						out.append("%s automates effect %s's on/off, which it does not have" % [t.id, a.target.substr(7)])
 	return out
 
 

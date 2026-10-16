@@ -152,6 +152,7 @@ static func sample() -> DawKitProject:
 	kick.automation.append(DawKitAutomation.new("pan", [[2.0, -0.5, 1], [6.0, 0.5, 0]]))
 	kick.automation.append(DawKitAutomation.new("mute", [[10.0, 1.0, 0], [11.0, 0.0, 0]]))
 	kick.automation.append(DawKitAutomation.new("fx:0:1", [[1.0, 0.25, 1], [3.0, 0.75, 1]]))
+	kick.automation.append(DawKitAutomation.new("enable:0", [[5.0, 0.0, 0], [9.0, 1.0, 0]]))
 	keys.automation.append(DawKitAutomation.new("send:" + verb.id, [[0.0, -24.0, 1], [16.0, -6.0, 0]]))
 	p.master.automation.append(DawKitAutomation.new("volume", [[170.0, -1.5, 1], [182.0, -60.0, 0]]))
 	return p
@@ -1106,10 +1107,13 @@ func _test_automation_is_read_along_the_song() -> void:
 	close("after the last, the last holds", a.value_at(60.0), -6.0)
 	check("with no points, the control's own value", DawKitAutomation.new("pan").value_at(1.0, 0.3) == 0.3)
 	check("a target names a control, or nothing", DawKitAutomation.kind_of("fx:1:4") == "fx"
-			and DawKitAutomation.kind_of("send:t3") == "send" and DawKitAutomation.kind_of("fx:x") == "")
+			and DawKitAutomation.kind_of("send:t3") == "send" and DawKitAutomation.kind_of("fx:x") == ""
+			and DawKitAutomation.kind_of("enable:2") == "enable" and DawKitAutomation.kind_of("enable:x") == "")
 	var p := sample()
 	p.track("t2").automation.append(DawKitAutomation.new("fx:9:0", [[0.0, 0.5, 0]]))
 	check("automating an effect that is not there is a problem", not p.problems().is_empty())
+	p.track("t2").automation.append(DawKitAutomation.new("enable:9", [[0.0, 1.0, 0]]))
+	check("and so is its bypass", p.problems().size() >= 2)
 
 
 func _test_automation_survives_the_file_without_our_extras() -> void:

@@ -238,10 +238,12 @@ class _Writer:
 				"fx":
 					var parts := a.target.split(":")
 					param = "%s-fx%d-p%d" % [t.id, int(parts[1]), int(parts[2])]
+				"enable":
+					param = "%s-fx%d-on" % [t.id, int(a.target.substr(7))]
 			if param.is_empty():
 				continue
 			var points := lane.add("Points", {"id": "%s-auto-%s" % [t.id, a.target.replace(":", "-")]})
-			if kind != "mute":
+			if kind != "mute" and kind != "enable":
 				points.attrs["unit"] = unit
 			points.add("Target", {"parameter": param})
 			for pt in a.points:
@@ -251,7 +253,7 @@ class _Writer:
 						v = db_to_linear(v)
 					"pan":
 						v = (v + 1.0) * 0.5
-				if kind == "mute":
+				if kind == "mute" or kind == "enable":
 					points.add("BoolPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.flag(v >= 0.5)})
 				else:
 					points.add("RealPoint", {"time": DawKitXml.num(pt[0]), "value": DawKitXml.num(v),
@@ -497,6 +499,7 @@ class _Reader:
 							for px in params.children:
 								_param(px, t, "fx:%d:%d" % [t.effects.size(), int(px.get_float("parameterID", n))])
 								n += 1
+						_param(dx.first("Enabled"), t, "enable:%d" % t.effects.size())
 						t.effects.append(e)
 			var sends := ch.first("Sends")
 			if sends != null:
@@ -550,7 +553,7 @@ class _Reader:
 					continue
 				var shape := DawKitAutomation.LINEAR if pt.get_attr("interpolation", "hold") == "linear" else DawKitAutomation.HOLD
 				var v := 0.0
-				if kind == "mute":
+				if kind == "mute" or kind == "enable":
 					v = 1.0 if pt.get_bool("value") else 0.0
 					shape = DawKitAutomation.HOLD
 				else:

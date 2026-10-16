@@ -177,14 +177,14 @@ func is_frozen() -> bool:
 func freeze(rendered: DawKitClip) -> bool:
 	if is_frozen():
 		return false
-	var fx_lanes := automation.filter(func(a): return a.target.begins_with("fx:"))
+	var fx_lanes := automation.filter(func(a): return (a.target.begins_with("fx:") or a.target.begins_with("enable:")))
 	frozen = {"clips": clips.map(func(c): return c.to_dict()), "comp": comp.map(func(s): return s.duplicate()),
 			"effects": effects.map(func(e): return e.to_dict()),
 			"automation": fx_lanes.map(func(a): return a.to_dict())}
 	clips.assign([rendered])
 	comp = []
 	effects.clear()
-	automation = automation.filter(func(a): return not a.target.begins_with("fx:"))
+	automation = automation.filter(func(a): return not (a.target.begins_with("fx:") or a.target.begins_with("enable:")))
 	return true
 
 

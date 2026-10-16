@@ -9,6 +9,7 @@ extends RefCounted
 ##   "mute"            0 or 1
 ##   "send:<track id>" the level of the send to that track, in dB
 ##   "fx:<i>:<p>"      effect i's parameter p, normalised 0-1
+##   "enable:<i>"      effect i on (1) or bypassed (0)
 ## Points are [seconds, value, shape]: from each point to the next the value holds (HOLD) or goes
 ## there in a straight line (LINEAR). Before the first point the first value holds, after the last
 ## the last. Seconds, like clips, whatever the tempo does.
@@ -67,6 +68,8 @@ static func kind_of(what: String) -> String:
 	if what.begins_with("send:") and what.length() > 5:
 		return "send"
 	var parts := what.split(":")
+	if parts.size() == 2 and parts[0] == "enable" and parts[1].is_valid_int():
+		return "enable"
 	if parts.size() == 3 and parts[0] == "fx" and parts[1].is_valid_int() and parts[2].is_valid_int():
 		return "fx"
 	return ""
@@ -79,7 +82,7 @@ static func clamp_value(what: String, v: float) -> float:
 			return clampf(v, -150.0, 24.0)
 		"pan":
 			return clampf(v, -1.0, 1.0)
-		"mute":
+		"mute", "enable":
 			return 1.0 if v >= 0.5 else 0.0
 		"fx":
 			return clampf(v, 0.0, 1.0)
