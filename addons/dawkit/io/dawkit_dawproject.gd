@@ -179,9 +179,11 @@ class _Writer:
 				_clip(clips, t, c)
 				shapes.append({"gain_db": c.gain_db, "colour": [c.colour.r, c.colour.g, c.colour.b, c.colour.a],
 						"start": c.start, "length": c.length, "notes": Array(c.notes),
-						"locked": c.locked, "reversed": c.reversed, "fade_shape": c.fade_shape,
+						"locked": c.locked, "lane": c.lane, "reversed": c.reversed, "fade_shape": c.fade_shape,
 						"fade_out_shape": c.fade_out_shape})
 			extras["tracks"][t.id]["clips"] = shapes
+			if not t.comp.is_empty():
+				extras["tracks"][t.id]["comp"] = t.comp.map(func(s): return s.duplicate())
 		if not p.markers.is_empty():
 			var markers := arr.add("Markers", {"timeUnit": "seconds", "id": "markers"})
 			for m in p.markers:
@@ -670,6 +672,10 @@ class _Reader:
 			_lanes(top, top.get_attr("track"), top.get_attr("timeUnit", "beats"))
 		for t in _p.tracks:
 			var shapes: Array = extras.get("tracks", {}).get(t.id, {}).get("clips", [])
+			# Which lane sounds where is not in DAWproject either.
+			for s in extras.get("tracks", {}).get(t.id, {}).get("comp", []):
+				if s is Array and s.size() == 3 and float(s[1]) > float(s[0]):
+					t.comp.append([float(s[0]), float(s[1]), maxi(int(s[2]), 0)])
 			for i in mini(shapes.size(), t.clips.size()):
 				var c := t.clips[i]
 				var sh: Dictionary = shapes[i]
@@ -679,6 +685,7 @@ class _Reader:
 					c.gain_db = float(sh.get("gain_db", 0.0))
 					# None of these is in DAWproject.
 					c.locked = bool(sh.get("locked", false))
+					c.lane = maxi(int(sh.get("lane", 0)), 0)
 					c.reversed = bool(sh.get("reversed", false))
 					c.fade_shape = DawKitClip.clean_shape(sh.get("fade_shape", 0))
 					c.fade_out_shape = DawKitClip.clean_shape(sh.get("fade_out_shape", c.fade_shape))

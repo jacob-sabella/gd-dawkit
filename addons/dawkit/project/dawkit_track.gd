@@ -32,6 +32,10 @@ var group := 0
 var effects: Array[DawKitEffect] = []
 var sends: Array[DawKitSend] = []
 var clips: Array[DawKitClip] = []
+## Which take lane sounds where: [start, end, lane] stretches of the song, in seconds, in order and
+## not overlapping. Empty means no comp, and every lane sounds as stacked clips do. Outside every
+## stretch of a comp that has any, nothing sounds.
+var comp: Array = []
 ## Its automated controls, one lane per control (see DawKitAutomation).
 var automation: Array[DawKitAutomation] = []
 
@@ -47,6 +51,7 @@ func to_dict() -> Dictionary:
 			"monitor": monitor, "input": input, "group": group, "effects": effects.map(func(e): return e.to_dict()),
 			"sends": sends.map(func(s): return s.to_dict()),
 			"clips": clips.map(func(c): return c.to_dict()),
+			"comp": comp.map(func(c): return c.duplicate()),
 			"automation": automation.map(func(a): return a.to_dict())}
 
 
@@ -70,6 +75,10 @@ static func from_dict(d: Dictionary) -> DawKitTrack:
 		t.clips.append(DawKitClip.from_dict(c))
 	for a in d.get("automation", []):
 		t.automation.append(DawKitAutomation.from_dict(a))
+	for c in d.get("comp", []):
+		if c is Array and c.size() == 3 and float(c[1]) > float(c[0]):
+			t.comp.append([float(c[0]), float(c[1]), maxi(int(c[2]), 0)])
+	t.comp.sort_custom(func(a, b): return a[0] < b[0])
 	return t
 
 
@@ -79,3 +88,62 @@ func automation_of(target: String) -> DawKitAutomation:
 		if a.target == target:
 			return a
 	return null
+
+
+## How many take lanes the clips use: one more than the highest.
+func lane_count() -> int:
+	var n := 1
+	for c in clips:
+		n = maxi(n, c.lane + 1)
+	return n
+
+
+## Make `lane` the one that sounds from `from` to `to`, replacing whatever the comp said there and
+## joining onto a neighbour of the same lane. The comp starts out as lane 0 throughout, over the
+## span the clips cover, so choosing a stretch leaves the rest as it was heard.
+func set_comp(from: float, to: float, lane: int) -> void:
+	if to <= from:
+		return
+	if comp.is_empty() and not clips.is_empty():
+		var lo := INF
+		var hi := -INF
+		for c in clips:
+			lo = minf(lo, c.start)
+			hi = maxf(hi, c.end())
+		comp = [[lo, hi, 0]]
+	var next: Array = []
+	for s in comp:
+		if s[1] <= from or s[0] >= to:
+			next.append(s)
+			continue
+		if s[0] < from:
+			next.append([s[0], from, s[2]])
+		if s[1] > to:
+			next.append([to, s[1], s[2]])
+	next.append([from, to, maxi(lane, 0)])
+	next.sort_custom(func(a, b): return a[0] < b[0])
+	var joined: Array = []
+	for s in next:
+		if not joined.is_empty() and joined[-1][2] == s[2] and absf(joined[-1][1] - s[0]) < 1e-9:
+			joined[-1][1] = s[1]
+		else:
+			joined.append(s)
+	comp = joined
+
+
+## The clips as they sound: all of them with no comp, otherwise each cut to the stretches of the
+## comp that name its lane.
+func playing_clips() -> Array[DawKitClip]:
+	if comp.is_empty():
+		return clips.duplicate()
+	var out: Array[DawKitClip] = []
+	for c in clips:
+		for s in comp:
+			if s[2] != c.lane:
+				continue
+			var from := maxf(c.start, s[0])
+			var to := minf(c.end(), s[1])
+			if to > from:
+				out.append(c.slice(from, to))
+	out.sort_custom(func(a, b): return a.start < b.start)
+	return out

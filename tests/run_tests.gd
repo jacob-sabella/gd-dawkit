@@ -11,6 +11,7 @@ func _initialize() -> void:
 	_test_every_field_is_in_the_plain_form()
 	_test_a_difference_is_found_and_named()
 	_test_a_looped_clip_plays_its_loop()
+	_test_a_comp_picks_which_take_sounds()
 	_test_folders_route_to_their_parent()
 	_test_broken_references_are_reported()
 	_test_a_project_survives_a_dawproject_file()
@@ -128,9 +129,11 @@ static func sample() -> DawKitProject:
 	take.muted = true
 	take.reversed = true
 	take.locked = true
+	take.lane = 1
 	take.fade_shape = DawKitClip.FADE_EQUAL_POWER
 	take.fade_out_shape = DawKitClip.FADE_S_CURVE
 	kick.clips.append(take)
+	kick.comp = [[12.125, 13.5, 1], [13.5, 40.0, 0]]
 	var loop := DawKitClip.new()
 	loop.start = 20.0
 	loop.length = 12.0
@@ -1446,3 +1449,45 @@ func _test_a_plugin_effect_runs_once_for_every_bus_it_is_on() -> void:
 	close("which is the effect's sound", absf(level), 0.25, 0.001)
 	e.set_bypass(true)
 	close("bypassed, the sound goes through untouched", e.process_as(0, block)[0].x, block[0].x)
+
+
+func _test_a_comp_picks_which_take_sounds() -> void:
+	var t := DawKitTrack.new("t", "Vox")
+	var a := DawKitClip.new()
+	a.start = 0.0
+	a.length = 8.0
+	a.source = "a.wav"
+	a.fade_in = 0.5
+	a.fade_out = 0.5
+	var b := DawKitClip.new()
+	b.start = 0.0
+	b.length = 8.0
+	b.source = "b.wav"
+	b.lane = 1
+	t.clips = [a, b]
+	check("two lanes", t.lane_count() == 2)
+	check("with no comp both sound", t.playing_clips().size() == 2)
+	t.set_comp(2.0, 5.0, 1)
+	check("a comp from nothing keeps the rest on the first lane (%s)" % [t.comp],
+			t.comp == [[0.0, 2.0, 0], [2.0, 5.0, 1], [5.0, 8.0, 0]])
+	var pl := t.playing_clips()
+	check("so the first take plays either side of the second", pl.size() == 3
+			and pl[0].source == "a.wav" and pl[1].source == "b.wav" and pl[2].source == "a.wav")
+	check("each piece is where its stretch is", pl[0].start == 0.0 and pl[0].length == 2.0
+			and pl[1].start == 2.0 and pl[1].length == 3.0 and pl[2].start == 5.0 and pl[2].length == 3.0)
+	check("and starts that far into its file", pl[1].source_offset == 2.0 and pl[2].source_offset == 5.0)
+	check("a fade stays only on an end that is still the clip's", pl[0].fade_in == 0.5 and pl[0].fade_out == 0.0
+			and pl[2].fade_in == 0.0 and pl[2].fade_out == 0.5)
+	t.set_comp(5.0, 8.0, 1)
+	check("choosing the same lane next door joins the stretches", t.comp == [[0.0, 2.0, 0], [2.0, 8.0, 1]])
+	t.set_comp(3.0, 4.0, 0)
+	check("a stretch inside another splits it", t.comp == [[0.0, 2.0, 0], [2.0, 3.0, 1], [3.0, 4.0, 0], [4.0, 8.0, 1]])
+	var m := DawKitClip.new()
+	m.start = 10.0
+	m.length = 4.0
+	m.notes = PackedFloat64Array([0.5, 1.5, 60, 100, 0, 2.5, 3.5, 64, 90, 0])
+	var cut := m.slice(11.0, 14.0)
+	check("a sliced MIDI clip keeps the notes in its window, counted from its start (%s)" % [cut.notes],
+			cut.notes == PackedFloat64Array([0.0, 0.5, 60, 100, 0, 1.5, 2.5, 64, 90, 0]))
+	var back := DawKitTrack.from_dict(t.to_dict())
+	check("lanes and the comp survive the plain form", back.comp == t.comp and back.clips[1].lane == 1)

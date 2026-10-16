@@ -13,6 +13,9 @@ var name := ""
 var muted := false
 ## Pinned against edits: a host refuses to move, trim or reshape it until it is unlocked.
 var locked := false
+## Which take lane of its track it is on: 0 is the first. A track with a comp plays the lane each
+## stretch of the comp names (see DawKitTrack.comp); without one every lane sounds.
+var lane := 0
 ## Played backwards. `source_offset` is then seconds into the reversed sound, so a clip's offset
 ## and length mean the same whichever way it plays.
 var reversed := false
@@ -101,8 +104,39 @@ static func clean_shape(v: Variant) -> int:
 	return shape if shape >= 0 and shape < FADE_SHAPES else FADE_LINEAR
 
 
+## The part of this clip between `from` and `to` (song seconds, inside the clip) as a clip of its
+## own, sounding the same: its file offset moved on by what was cut off the front, its notes
+## trimmed to the window and counted from the new start. A fade stays only at an end that is
+## still the clip's own.
+func slice(from: float, to: float) -> DawKitClip:
+	var c := DawKitClip.from_dict(to_dict())
+	from = clampf(from, start, end())
+	to = clampf(to, from, end())
+	c.start = from
+	c.length = to - from
+	c.source_offset = source_offset + (from - start)
+	if from > start:
+		c.fade_in = 0.0
+	if to < end():
+		c.fade_out = 0.0
+	c.fade_in = minf(c.fade_in, c.length)
+	c.fade_out = minf(c.fade_out, c.length)
+	if not notes.is_empty():
+		var shift := from - start
+		var kept := PackedFloat64Array()
+		for i in note_count():
+			var o := i * NOTE_WIDTH
+			var on := notes[o] - shift
+			var off := notes[o + 1] - shift
+			if off <= 0.0 or on >= c.length:
+				continue
+			kept.append_array(PackedFloat64Array([maxf(on, 0.0), minf(off, c.length), notes[o + 2], notes[o + 3], notes[o + 4]]))
+		c.notes = kept
+	return c
+
+
 func to_dict() -> Dictionary:
-	return {"start": start, "length": length, "name": name, "muted": muted, "locked": locked, "reversed": reversed,
+	return {"start": start, "length": length, "name": name, "muted": muted, "locked": locked, "lane": lane, "reversed": reversed,
 			"colour": colour.to_html(true), "fade_in": fade_in, "fade_out": fade_out,
 			"fade_shape": fade_shape, "fade_out_shape": fade_out_shape, "gain_db": gain_db, "source": source, "source_offset": source_offset,
 			"loop_start": loop_start, "loop_end": loop_end,
@@ -116,6 +150,7 @@ static func from_dict(d: Dictionary) -> DawKitClip:
 	c.name = str(d.get("name", ""))
 	c.muted = bool(d.get("muted", false))
 	c.locked = bool(d.get("locked", false))
+	c.lane = maxi(int(d.get("lane", 0)), 0)
 	c.reversed = bool(d.get("reversed", false))
 	c.colour = Color.from_string(str(d.get("colour", "00000000")), Color(0, 0, 0, 0))
 	c.fade_in = float(d.get("fade_in", 0.0))
