@@ -4,9 +4,10 @@ A DAW engine that runs inside Godot: a project model (tracks, folders, sends, ef
 markers, tempo), a mixer and transport on Godot's own `AudioServer`, and project files in
 **DAWproject**, the open interchange format that Bitwig, Studio One and Cubase read and write.
 
-It needs Godot 4.7 or later. It has no user interface of its own. A host application (a game, a 3D
-studio, an app) draws whatever it likes and drives the engine through its API. dawlings (a 3D
-studio game) is the first host.
+It needs Godot 4.7 or later. The engine has no user interface of its own: a host application (a
+game, a 3D studio, an app) draws whatever it likes and drives the engine through its API. dawlings
+(a 3D studio game) is the first host. For a host that wants an ordinary one, `ui/` is a 2D DAW
+interface built only on the engine's own classes (see "2D interface").
 
 ## Layout
 
@@ -15,6 +16,7 @@ studio game) is the first host.
       io/                   DAWproject files (DawKitDawproject) and the XML they are made of;
                             audio files people bring (DawKitAudioFile)
       engine/               the click (DawKitMetronome) and the built-in instrument (DawKitTine)
+      ui/                   the 2D interface (DawKitStudio) and what it asks of a host (DawKitHost)
     native/                 the native core (GDExtension): lanes, transport, plugin hosting
       third_party/          the plugin formats' interface headers (see THIRD_PARTY_NOTICES.md)
     tests/                  the engine's own checks, run headless
@@ -28,6 +30,62 @@ studio game) is the first host.
   project captured, saved, loaded and captured again comes back identical.
 - **Every class is prefixed `DawKit`**, because Godot's class names are global and an addon
   shares them with its host.
+
+## 2D interface
+
+`DawKitStudio` is a whole DAW window as one Control: a transport bar (play, stop, record, loop,
+click, bars and time, tempo, undo and redo), the arrangement (a ruler of bars with markers and the
+loop, a lane per track with its header, clips drawn with their waves or notes, the playhead) and
+the mixer (a strip per track with its effect chain and sends, fader, level meter, pan, mute,
+solo and arm, and the master), an effect panel with the open effect's controls, and a piano roll
+for a MIDI clip's notes.
+
+It never edits a project itself. It draws `host.project()` and asks a `DawKitHost` for every
+change by track id, in decibels, pan -1..1 and seconds, and shows whatever the host then says,
+gathered once a frame. `can()` says which edits a host answers, and the interface leaves out the
+rest. `DawKitProjectHost` is a host that is just a project in memory, with undo, and a clock for
+a transport (no sound: that is the host's mixer):
+
+    var studio := DawKitStudio.new(DawKitProjectHost.new(project))
+    add_child(studio)
+
+An application with its own engine, a network or a session in between implements `DawKitHost`
+over that instead. `DawKitLook.use_signals` (mute, solo, record, ok, warn, over) and
+`DawKitLook.set_text_scale` restyle it for a reader's eyes, before a studio is made. F1 lists every
+key, and the status line says what is under the pointer. FILE on the transport starts, opens (recent ones too), saves and renders, as
+the host can (FILES, SAVE, RENDER), and a status line along the bottom says what the host says
+(`DawKitHost.said`). Keys while it shows: Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S, Space, Ctrl+R, Home, L, C, Ctrl+Z / Ctrl+Shift+Z, and
+F5, F6, F7 for the arrangement, the mixer or both. In the arrangement, click the ruler or an empty
+lane to seek; click a clip to select it (Shift or Ctrl to add; a box drawn on an empty lane
+selects what it touches); drag a clip (to another track too) to move it, on the beat unless Alt
+is held; drag its edges to trim it, the handles at its name bar's corners to fade it and the one
+in the middle for its gain; right-click it for a menu. S splits the selection at the playhead,
+Del deletes it, Ctrl+D duplicates it, Ctrl+A selects everything and Esc nothing. The wheel scrolls
+tracks, Shift+wheel the song, Ctrl+wheel zooms, Alt+wheel makes the lanes taller or shorter, the
+middle button drags the view. A track's header: double-click its name to rename it, drag it to
+move the track (a folder takes what is in it along), right-click it for new, duplicate, colour,
+into the folder above, out of its folder and delete, and its - or + to shut or open a folder; the
++ above the headers (or Ctrl+T) adds a track. `DawKitProject.move_track` and `remove_track` keep a
+project's folders whole. On a strip: + FX adds an effect (grouped by plugin format), its light
+bypasses it, its name opens its controls, a drag moves it along the chain or to another strip,
+and right-click has the rest; + SEND sends the track to another, with a level and, on
+right-click, before or after the fader.
+
+The ruler has three rows. In the top one, double-click for a marker; drag a marker or a region
+(by its middle or either end) to move it; double-click one to rename it. In the middle one are
+the tempo's and time signature's changes: double-click one to set it (or the row for a new tempo
+change), drag one along the song. In the bars, click to seek and drag to set the loop's range or
+move its ends. Right-click the ruler for a region over the loop, looping a region, a time
+signature change and deleting. The transport's COUNT sets a count-in.
+
+A track header's A lists the controls it can automate; each one picked gets a lane under the
+track. Click a lane for a point, drag a point, right-click one to delete it; X hides the lane.
+
+Double-click a MIDI clip for its notes in the piano roll, which has the height to itself until its
+back button or Esc. Drag on an empty row to draw a note, a note to move it, its right end to
+stretch it (on the grid unless Alt is held); right-click or Del deletes one, the arrows transpose
+the picked note (Shift an octave), the bars under the notes are their velocities, and Q quantizes
+the clip to the grid chosen at the top.
 
 ## Audio files
 

@@ -7,6 +7,11 @@ var _failures := 0
 
 
 func _initialize() -> void:
+	# Once the tree is running: a Range (a fader, a spin box) says it changed only inside one.
+	_run.call_deferred()
+
+
+func _run() -> void:
 	_test_a_project_survives_its_plain_form()
 	_test_every_field_is_in_the_plain_form()
 	_test_a_difference_is_found_and_named()
@@ -51,6 +56,21 @@ func _initialize() -> void:
 	_test_an_instrument_plugin_plays_live_notes()
 	_test_a_lane_plays_its_notes_through_its_instrument()
 	_test_a_plugin_effect_runs_once_for_every_bus_it_is_on()
+	_test_the_fader_law_round_trips()
+	_test_the_2d_studio_shows_the_project()
+	_test_the_2d_studio_asks_the_host_for_every_change()
+	_test_the_2d_arrange_maps_time_and_moves_clips()
+	_test_the_project_host_undoes_each_edit()
+	_test_the_project_host_edits_the_selection()
+	_test_the_2d_arrange_edits_clips_by_their_handles()
+	_test_a_project_moves_its_tracks_and_folders()
+	_test_the_2d_arrange_edits_tracks()
+	_test_the_2d_mixer_has_effects_and_sends()
+	_test_the_2d_piano_roll_edits_notes()
+	_test_the_2d_ruler_edits_the_song()
+	_test_the_2d_arrange_draws_automation()
+	_test_the_2d_studio_saves_and_opens()
+	_test_the_2d_studio_says_what_is_under_the_pointer()
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -1676,3 +1696,724 @@ func _test_a_comp_picks_which_take_sounds() -> void:
 			flat.comp.is_empty() and flat.clips.size() == 4 and flat.clips.all(func(c): return c.lane == 0))
 	var back := DawKitTrack.from_dict(t.to_dict())
 	check("lanes and the comp survive the plain form", back.comp == t.comp and back.clips[1].lane == 1)
+
+
+func _test_the_fader_law_round_trips() -> void:
+	for db in [-60.0, -24.0, -6.0, -0.5, 0.0, 3.0, 12.0]:
+		check("the fader puts %.1f dB back where it was" % db, absf(DawKitLook.db_of(DawKitLook.fader_of(db)) - db) < 0.001)
+	check("0 dB is about three-quarters up a fader", DawKitLook.fader_of(0.0) > 0.68 and DawKitLook.fader_of(0.0) < 0.74)
+	check("the bottom of a fader is silence", DawKitLook.db_of(0.0) == DawKitLook.SILENT_DB and DawKitLook.fader_of(DawKitLook.SILENT_DB) == 0.0)
+	check("a fader's top is its most", is_equal_approx(DawKitLook.db_of(1.0), DawKitLook.FADER_MAX_DB))
+	check("levels and pans are written as a desk writes them", DawKitLook.db_text(-4.21) == "-4.2" and DawKitLook.db_text(1.5) == "+1.5"
+			and DawKitLook.db_text(-200.0) == "-inf" and DawKitLook.pan_text(0.0) == "C" and DawKitLook.pan_text(-0.4) == "L40" and DawKitLook.pan_text(1.0) == "R100")
+	var p := DawKitProject.new()
+	p.tempo = 120.0
+	check("bar 3 at 120 in 4/4 starts at 4 s", DawKitLook.bars_text(p, 4.0) == "3.1.00" and DawKitLook.bars_text(p, 4.75) == "3.2.50")
+	check("a time is written in minutes", DawKitLook.clock_text(64.25) == "1:04.250")
+
+
+## A project of three tracks, one in a folder, with an audio clip and a MIDI clip.
+static func _band() -> DawKitProject:
+	var p := DawKitProject.new()
+	p.title = "Band"
+	var drums := p.add_track("Drums")
+	drums.colour = Color(0.8, 0.3, 0.3)
+	var keys := p.add_track("Keys")
+	keys.parent = drums.id
+	keys.volume_db = -6.0
+	keys.pan = -0.4
+	keys.mute = true
+	var bass := p.add_track("Bass")
+	var loop := DawKitClip.new()
+	loop.name = "Loop"
+	loop.start = 2.0
+	loop.length = 4.0
+	loop.source = "loop.wav"
+	drums.clips.append(loop)
+	var riff := DawKitClip.new()
+	riff.name = "Riff"
+	riff.start = 0.0
+	riff.length = 2.0
+	riff.notes = PackedFloat64Array([0.0, 0.5, 60, 100, 0, 0.5, 1.0, 64, 90, 0])
+	bass.clips.append(riff)
+	return p
+
+
+func _studio(host: DawKitHost) -> DawKitStudio:
+	var s := DawKitStudio.new(host)
+	s.size = Vector2(1280, 720)
+	root.add_child(s)
+	s.refresh()
+	return s
+
+
+func _test_the_2d_studio_shows_the_project() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	check("the arrangement has a header per track, in order", s.arrange.headers.size() == 3 and s.arrange._order == ["t1", "t2", "t3"])
+	check("the mixer has a strip per track, and the master's", s.mixer.strips.size() == 4 and s.mixer.strips.has(DawKitProject.MASTER_ID))
+	var keys: DawKitStrip = s.mixer.strips["t2"]
+	check("a strip shows its track's name, level, pan and mute", keys.name_label.text == "Keys" and keys.db_label.text == "-6.0"
+			and keys.pan_label.text == "L40" and keys.mute.button_pressed and not keys.solo.button_pressed)
+	check("a strip's fader stands at its level", is_equal_approx(keys.fader.value, DawKitLook.fader_of(-6.0)))
+	var header: Control = s.arrange.headers["t2"]
+	check("a track in a folder is indented under it", header.depth == 1 and s.arrange.headers["t1"].depth == 0)
+	check("a header's mute shows the track's", (header.get_node("Row/Mute") as Button).button_pressed)
+	check("the transport says the project's name", s.transport.title_label.text == "Band")
+	s.transport.show_position()
+	check("the transport says where the song is", s.transport.bars_label.text == "1.1.00" and s.transport.clock_label.text == "0:00.000")
+	host.project().track("t3").name = "Low end"
+	host.track_changed.emit("t3")
+	check("a change is not shown before the frame gathers it", s.mixer.strips["t3"].name_label.text == "Bass")
+	s.refresh()
+	check("a renamed track is renamed on its strip", s.mixer.strips["t3"].name_label.text == "Low end")
+	host.project().add_track("Vox")
+	host.project_changed.emit()
+	s.refresh()
+	check("a track added is a new strip and a new header", s.mixer.strips.size() == 5 and s.arrange.headers.size() == 4)
+	s.show_view(DawKitStudio.View.MIXER)
+	check("the mixer can be shown on its own", not s.arrange.is_visible_in_tree() and s.mixer.is_visible_in_tree())
+	s.show_view(DawKitStudio.View.ARRANGE)
+	check("the arrangement can be shown on its own", s.arrange.visible and not s.mixer.is_visible_in_tree())
+	s.free()
+
+
+func _test_the_2d_studio_asks_the_host_for_every_change() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var keys: DawKitStrip = s.mixer.strips["t2"]
+	keys.fader.value = DawKitLook.fader_of(-12.0)
+	check("moving a fader sets the track's level", absf(host.project().track("t2").volume_db + 12.0) < 0.001)
+	keys.pan.value = 0.25
+	check("moving a pan sets the track's pan", is_equal_approx(host.project().track("t2").pan, 0.25))
+	keys.mute.button_pressed = false
+	check("unmuting on the strip unmutes the track", not host.project().track("t2").mute)
+	(s.arrange.headers["t3"].get_node("Row/Solo") as Button).button_pressed = true
+	check("soloing in the header solos the track", host.project().track("t3").solo)
+	s.refresh()
+	check("the strip follows a solo made in the header", s.mixer.strips["t3"].solo.button_pressed)
+	s.transport.play_button.button_pressed = true
+	check("play plays", host.is_playing())
+	host.advance(1.5)
+	check("the clock runs while playing", is_equal_approx(host.position(), 1.5))
+	s.transport.stop_button.pressed.emit()
+	check("stop stops", not host.is_playing())
+	s.transport.loop_button.button_pressed = true
+	check("the loop button loops", host.project().loop_on)
+	s.transport.tempo.value = 140.0
+	check("the tempo box sets the tempo", is_equal_approx(host.project().tempo, 140.0))
+	var space := InputEventKey.new()
+	space.keycode = KEY_SPACE
+	space.pressed = true
+	check("Space is a key the studio answers", s._key(space))
+	check("Space plays", host.is_playing())
+	s._key(space)
+	check("Space again stops", not host.is_playing())
+	var z := InputEventKey.new()
+	z.keycode = KEY_Z
+	z.ctrl_pressed = true
+	z.pressed = true
+	s._key(z)
+	check("Ctrl+Z undoes the last edit", is_equal_approx(host.project().tempo, 120.0))
+	s.refresh()
+	check("an undo is shown", is_equal_approx(s.transport.tempo.value, 120.0))
+	s.free()
+	var none := _studio(DawKitHost.new())
+	check("a host that can do nothing gets a studio that offers nothing", none.transport.play_button.disabled
+			and none.transport.undo_button.disabled and not none.transport.tempo.editable and none.mixer.strips.size() == 0)
+	none.free()
+
+
+func _test_the_2d_arrange_maps_time_and_moves_clips() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	check("a second is pixels_per_second wide, after the headers", is_equal_approx(a.x_of(2.0), DawKitArrange.HEADER_WIDTH + 100.0)
+			and is_equal_approx(a.time_at(a.x_of(3.3)), 3.3))
+	var drums_mid := a.lane_top(0) + DawKitArrange.LANE_HEIGHT * 0.5
+	check("the clip under a point is found", a.clip_at(Vector2(a.x_of(3.0), drums_mid)) == ["t1", 0])
+	check("nothing is found off a clip", a.clip_at(Vector2(a.x_of(1.0), drums_mid)).is_empty())
+	check("a time snaps to the nearest beat", is_equal_approx(a.snap(2.2), 2.0) and is_equal_approx(a.snap(2.3), 2.5))
+	# Drag the drum loop a beat later and down onto the bass.
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = Vector2(a.x_of(3.0), drums_mid)
+	a._gui_input(down)
+	var move := InputEventMouseMotion.new()
+	move.position = Vector2(a.x_of(3.52), a.lane_top(2) + 10.0)
+	a._gui_input(move)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = move.position
+	a._gui_input(up)
+	var bass := host.project().track("t3")
+	check("a dragged clip lands on the track it was dropped on", host.project().track("t1").clips.is_empty() and bass.clips.size() == 2)
+	check("and on the beat nearest where it was dropped", bass.clips.size() == 2 and is_equal_approx(bass.clips[1].start, 2.5))
+	# Click the ruler to put the playhead there.
+	down.position = Vector2(a.x_of(5.1), 10.0)
+	a._gui_input(down)
+	a._gui_input(up)
+	check("a click on the ruler seeks to the beat there", is_equal_approx(host.position(), 5.0))
+	a.set_view(10.0, 2.0)
+	check("zoom is held to its range", a.pixels_per_second == DawKitArrange.MIN_PIXELS_PER_SECOND)
+	s.free()
+
+
+func _test_the_project_host_undoes_each_edit() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var before := host.project().duplicate()
+	host.set_volume("t1", -3.0)
+	host.set_mute("t3", true)
+	host.move_clip("t1", 0, 8.0)
+	check("each edit is an undo step, named", host.undo_name() == "move clip")
+	host.undo()
+	host.undo()
+	host.undo()
+	check("undoing every edit gives the project back", host.project().same_as(before))
+	host.redo()
+	check("redo does it again", is_equal_approx(host.project().track("t1").volume_db, -3.0))
+	host.set_volume("nope", 0.0)
+	check("an edit to a track that is not there is not a step", host.undo_name() == "volume")
+	var locked := _band()
+	locked.tracks[0].clips[0].locked = true
+	var held := DawKitProjectHost.new(locked)
+	held.move_clip("t1", 0, 9.0)
+	check("a locked clip does not move", is_equal_approx(held.project().tracks[0].clips[0].start, 2.0))
+
+
+func _test_the_project_host_edits_the_selection() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var p := host.project()
+	host.select_clip("t1", 0)
+	check("a clip clicked is selected", host.is_selected("t1", 0) and not host.is_selected("t3", 0))
+	host.select_clip("t3", 0, true)
+	check("Shift adds to the selection", host.is_selected("t1", 0) and host.is_selected("t3", 0))
+	host.select_clip("t3", 0, true)
+	check("and takes a selected one back out", not host.is_selected("t3", 0))
+	host.select_clip("t3", 0)
+	check("a plain click selects that clip alone", host.is_selected("t3", 0) and not host.is_selected("t1", 0))
+	host.split_selection(0.5)
+	var bass := p.track("t3")
+	check("a split cuts the selected clip in two at the playhead", bass.clips.size() == 2
+			and is_equal_approx(bass.clips[0].length, 0.5) and is_equal_approx(bass.clips[1].start, 0.5))
+	check("each half keeps the notes that sound in it", bass.clips[0].note_count() == 1 and bass.clips[1].note_count() == 1
+			and is_equal_approx(bass.clips[1].notes[0], 0.0))
+	check("both halves are selected", host.is_selected("t3", 0) and host.is_selected("t3", 1))
+	host.split_selection(50.0)
+	check("a split where no selected clip is is not a step", host.undo_name() == "split")
+	host.duplicate_selection()
+	check("a duplicate goes just after what was selected", bass.clips.size() == 4 and is_equal_approx(bass.clips[2].start, 2.0)
+			and is_equal_approx(bass.clips[3].start, 2.5) and host.is_selected("t3", 2) and not host.is_selected("t3", 0))
+	host.delete_selection()
+	check("delete takes the selected clips away", bass.clips.size() == 2 and not host.is_selected("t3", 0))
+	host.trim_clip("t1", 0, 3.0, 5.0)
+	var loop := p.track("t1").clips[0]
+	check("a trimmed front leaves the sound where it was", is_equal_approx(loop.start, 3.0) and is_equal_approx(loop.length, 2.0)
+			and is_equal_approx(loop.source_offset, 1.0))
+	host.trim_clip("t1", 0, 0.5, 5.0)
+	check("but not before the file starts", is_equal_approx(loop.start, 2.0) and is_equal_approx(loop.source_offset, 0.0))
+	host.set_clip_fades("t1", 0, 0.5, 9.0)
+	check("fades are held inside the clip", is_equal_approx(loop.fade_in, 0.5) and is_equal_approx(loop.fade_out, loop.length - 0.5))
+	host.set_clip_gain("t1", 0, -6.0)
+	host.set_clip_muted("t1", 0, true)
+	check("a clip's gain and mute", is_equal_approx(loop.gain_db, -6.0) and loop.muted)
+	host.clear_selection()
+	check("Esc selects nothing", not host.is_selected("t3", 0) and not host.is_selected("t3", 1))
+
+
+## Presses, drags and lets go in the arrangement, as the mouse would.
+func _mouse(a: Control, from: Vector2, to: Vector2, shift := false) -> void:
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = from
+	down.shift_pressed = shift
+	a._gui_input(down)
+	var move := InputEventMouseMotion.new()
+	move.position = to
+	a._gui_input(move)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.position = to
+	a._gui_input(up)
+
+
+func _test_the_2d_arrange_edits_clips_by_their_handles() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var loop := host.project().track("t1").clips[0]
+	var body := a.lane_top(0) + 40.0
+	var band := a.lane_top(0) + 3.0 + DawKitArrange.BAND * 0.5
+	check("the middle of a clip moves it", a.zone_at(Vector2(a.x_of(4.0), body))["zone"] == "move")
+	check("its edges trim it", a.zone_at(Vector2(a.x_of(2.0) + 2.0, body))["zone"] == "trim_left"
+			and a.zone_at(Vector2(a.x_of(6.0) - 2.0, body))["zone"] == "trim_right")
+	check("its name bar's corners fade it", a.zone_at(Vector2(a.x_of(2.0) + 2.0, band))["zone"] == "fade_in"
+			and a.zone_at(Vector2(a.x_of(6.0) - 2.0, band))["zone"] == "fade_out")
+	check("and its name bar's middle sets its gain", a.zone_at(Vector2(a.x_of(4.0), band))["zone"] == "gain")
+	_mouse(a, Vector2(a.x_of(6.0) - 2.0, body), Vector2(a.x_of(5.1), body))
+	check("dragging the right edge trims to the beat", is_equal_approx(loop.end(), 5.0) and host.undo_name() == "trim")
+	check("and selects the clip it took hold of", host.is_selected("t1", 0))
+	_mouse(a, Vector2(a.x_of(2.0) + 1.0, band), Vector2(a.x_of(2.8), band))
+	check("dragging the fade in's handle makes a fade", absf(loop.fade_in - 0.8) < 0.03)
+	_mouse(a, Vector2(a.x_of(3.5), band), Vector2(a.x_of(3.5), band + 12.0))
+	check("dragging the gain's handle down turns it down, a quarter dB a pixel", is_equal_approx(loop.gain_db, -3.0))
+	host.clear_selection()
+	_mouse(a, Vector2(a.x_of(0.5), a.lane_top(0) + 5.0), Vector2(a.x_of(2.5), a.lane_top(2) + 30.0))
+	check("a box drawn over two tracks selects the clips it touches", host.is_selected("t1", 0) and host.is_selected("t3", 0))
+	_mouse(a, Vector2(a.x_of(9.0), a.lane_top(1) + 20.0), Vector2(a.x_of(9.0), a.lane_top(1) + 20.0))
+	check("a click on an empty lane selects nothing and puts the playhead there",
+			not host.is_selected("t1", 0) and not host.is_selected("t3", 0) and is_equal_approx(host.position(), 9.0))
+	_mouse(a, Vector2(a.x_of(1.0), a.lane_top(2) + 30.0), Vector2(a.x_of(1.0), a.lane_top(2) + 30.0))
+	_mouse(a, Vector2(a.x_of(4.0), body), Vector2(a.x_of(4.0), body), true)
+	check("Shift-clicking a clip adds it", host.is_selected("t1", 0) and host.is_selected("t3", 0))
+	host.seek(1.0)
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.keycode = KEY_S
+	s._key(key)
+	check("S splits the selection at the playhead", host.project().track("t3").clips.size() == 2)
+	key.keycode = KEY_DELETE
+	s._key(key)
+	check("Delete deletes it", host.project().track("t3").clips.is_empty() and host.project().track("t1").clips.is_empty())
+	key.keycode = KEY_A
+	key.ctrl_pressed = true
+	host.undo()
+	s._key(key)
+	check("Ctrl+A selects every clip", host.is_selected("t1", 0) and host.is_selected("t3", 0) and host.is_selected("t3", 1))
+	a.open_clip_menu("t1", 0, Vector2(100, 100))
+	a._on_menu(DawKitArrange.MENU_MUTE)
+	check("the clip menu mutes a clip", host.project().track("t1").clips[0].muted)
+	s.free()
+
+
+static func _ids(p: DawKitProject) -> Array:
+	return p.tracks.map(func(t: DawKitTrack): return t.id)
+
+
+func _test_a_project_moves_its_tracks_and_folders() -> void:
+	# t1 Drums holds t2 Keys; t3 Bass at the top.
+	var p := _band()
+	check("a folder moves with what is in it", p.move_track("t1", 1, "") and _ids(p) == ["t3", "t1", "t2"]
+			and p.track("t2").parent == "t1")
+	p = _band()
+	check("a track moves into a folder", p.move_track("t3", 1, "t1") and _ids(p) == ["t1", "t3", "t2"] and p.track("t3").parent == "t1")
+	p = _band()
+	check("a folder does not go inside itself", not p.move_track("t1", 2, "t2") and _ids(p) == ["t1", "t2", "t3"])
+	check("nor into a folder it would not be in", not p.move_track("t3", 0, "t1") and p.track("t3").parent == "")
+	check("a track moved out of a folder", p.move_track("t2", 2, "") and _ids(p) == ["t1", "t3", "t2"] and p.track("t2").parent == "")
+	p = _band()
+	p.track("t3").sends.append(DawKitSend.new())
+	p.track("t3").sends[0].target = "t1"
+	check("a folder taken away lets go of what was in it, and the sends to it go", p.remove_track("t1")
+			and _ids(p) == ["t2", "t3"] and p.track("t2").parent == "" and p.track("t3").sends.is_empty() and p.problems().is_empty())
+
+
+func _test_the_2d_arrange_edits_tracks() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	var p := host.project()
+	check("a folder's header has a fold, and a track's does not", a.headers["t1"].fold.visible and not a.headers["t3"].fold.visible)
+	a.toggle_fold("t1")
+	check("a shut folder hides what is in it", a._order == ["t1", "t3"] and not a.headers.has("t2"))
+	a.toggle_fold("t1")
+	check("and an open one shows it again", a._order == ["t1", "t2", "t3"])
+	# Drag Bass's header up above Drums.
+	a._on_header_dropped("t3", Vector2(10, a.lane_top(0) + 4.0))
+	s.refresh()
+	check("a header dragged to the top moves its track to the top", _ids(host.project()) == ["t3", "t1", "t2"] and a._order == ["t3", "t1", "t2"])
+	host.undo()
+	s.refresh()
+	check("a header dropped where it is moves nothing", a.drop_plan("t2", 1).is_empty() and a.drop_plan("t2", 2).is_empty())
+	var plan := a.drop_plan("t3", 1)
+	check("dropped between a folder and what is in it, a track goes in the folder", plan == [1, "t1"])
+	check("dropped at its own edge, a track does not move", a.drop_plan("t3", 2).is_empty())
+	host.add_track("", "Vox")
+	s.refresh()
+	check("dropped just below a folder's last track, it joins that folder at its end", a.drop_plan("t4", 2) == [2, "t1"])
+	check("dropped at the very top or the end, it is at the top level", a.drop_plan("t4", 0) == [0, ""] and a.drop_plan("t2", 4) == [3, ""])
+	host.undo()
+	s.refresh()
+	check("Into the folder above makes the track above a folder", a.move_into_folder_above("t3") and host.project().track("t3").parent == "t1"
+			and _ids(host.project()) == ["t1", "t2", "t3"])
+	s.refresh()
+	check("Out of its folder takes it out", a.move_out_of_folder("t2") and host.project().track("t2").parent == ""
+			and _ids(host.project()) == ["t1", "t3", "t2"])
+	s.refresh()
+	host.add_track("t3", "Vox")
+	s.refresh()
+	p = host.project()
+	check("a track added after one in a folder is in it", _ids(p) == ["t1", "t3", "t4", "t2"] and p.track("t4").parent == "t1"
+			and p.track("t4").name == "Vox" and a.headers.has("t4") and s.mixer.strips.has("t4"))
+	a.headers["t4"].start_rename()
+	a.headers["t4"].finish_rename("Lead")
+	check("a header renames its track", p.track("t4").name == "Lead")
+	host.set_track_colour("t4", DawKitArrange.PALETTE[0])
+	s.refresh()
+	check("a colour is shown on the header and the strip", a.headers["t4"].swatch.color.is_equal_approx(DawKitArrange.PALETTE[0])
+			and s.mixer.strips["t4"]._swatch.color.is_equal_approx(DawKitArrange.PALETTE[0]))
+	host.duplicate_track("t4")
+	check("a duplicate is just after its track", _ids(host.project()) == ["t1", "t3", "t4", "t5", "t2"]
+			and host.project().track("t5").name == "Lead")
+	host.remove_track("t5")
+	s.refresh()
+	check("a track removed is gone from both views", not a.headers.has("t5") and not s.mixer.strips.has("t5"))
+	a._add_button.pressed.emit()
+	check("the + button adds a track at the end", host.project().tracks.back().parent == "" and host.project().tracks.size() == 5)
+	a.open_track_menu("t3", Vector2(50, 50))
+	a._on_track_menu(DawKitArrange.TRACK_DELETE)
+	check("the track menu deletes a track", host.project().track("t3") == null)
+	a.set_lane_height(1000.0)
+	check("a lane's height is held to its range", a.lane_height == DawKitArrange.MAX_LANE_HEIGHT)
+	s.free()
+
+
+func _test_the_2d_mixer_has_effects_and_sends() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var keys: DawKitStrip = s.mixer.strips["t2"]
+	check("a strip starts with no effects and no sends", keys.effects_box.get_child_count() == 0 and keys.sends_box.get_child_count() == 0)
+	host.add_effect("t2", "reverb")
+	host.add_effect("t2", "eq", 0)
+	s.refresh()
+	var t := host.project().track("t2")
+	check("effects go where they are put in the chain", t.effects.size() == 2 and t.effects[0].kind == "eq" and t.effects[1].kind == "reverb")
+	check("and a strip shows its chain in order", keys.effects_box.get_child_count() == 2
+			and (keys.effects_box.get_child(0).get_node("Name") as Button).text == "EQ")
+	(keys.effects_box.get_child(1).get_node("On") as Button).button_pressed = false
+	check("an effect's light bypasses it", not t.effects[1].enabled)
+	s.refresh()
+	check("and the row shows it bypassed", not (keys.effects_box.get_child(1).get_node("On") as Button).button_pressed)
+	(keys.effects_box.get_child(1).get_node("Name") as Button).pressed.emit()
+	var panel := s.effect_panel
+	check("an effect's name opens its controls", panel.visible and panel.id == "t2" and panel.index == 1
+			and panel.controls.get_child_count() == 2 and "Reverb" in panel.title.text)
+	(panel.controls.get_child(0).get_node("Slider") as HSlider).value = 0.8
+	check("a control moved on the panel moves the effect's", is_equal_approx(t.effects[1].values[0], 0.8))
+	(panel.controls.get_child(0).get_node("Slider") as HSlider).value = 0.9
+	check("and a drag of one control is one step to undo", host.undo_name() == "effect control")
+	s.refresh()
+	check("the panel says a control's value", (panel.controls.get_child(0).get_node("Top/Value") as Label).text == "90%")
+	panel.wet.value = 0.25
+	check("the panel's wet is the effect's", is_equal_approx(t.effects[1].wet, 0.25))
+	keys._drop_effect(Vector2.ZERO, {"dawkit_effect": ["t2", 1]}, 0)
+	check("an effect dropped on the first row is first", t.effects[0].kind == "reverb")
+	s.mixer.strips["t3"]._drop_effect(Vector2.ZERO, {"dawkit_effect": ["t2", 0]}, -1)
+	check("an effect dropped on another strip's chain moves to that track",
+			t.effects.size() == 1 and host.project().track("t3").effects.size() == 1)
+	s.refresh()
+	check("the panel follows nothing it no longer shows", not panel.visible or panel.index < host.project().track(panel.id).effects.size())
+	host.add_send("t2", "t3")
+	host.add_send("t2", "t2")
+	s.refresh()
+	check("a send to another track, never to itself", t.sends.size() == 1 and t.sends[0].target == "t3" and keys.sends_box.get_child_count() == 1)
+	check("a send's row says where it goes", (keys.sends_box.get_child(0).get_node("To") as Label).text == "Bass")
+	(keys.sends_box.get_child(0).get_node("Level") as HSlider).value = DawKitLook.fader_of(-10.0)
+	check("a send's level", absf(t.sends[0].volume_db + 10.0) < 0.001)
+	host.set_send_pre_fader("t2", 0, true)
+	s.refresh()
+	check("a send before the fader is marked", (keys.sends_box.get_child(0).get_node("To") as Label).text == "Bass*")
+	host.remove_send("t2", 0)
+	host.remove_effect("t3", 0)
+	s.refresh()
+	check("sends and effects removed", t.sends.is_empty() and host.project().track("t3").effects.is_empty()
+			and keys.sends_box.get_child_count() == 0)
+	check("the master's strip has no chain of its own here", s.mixer.strips[DawKitProject.MASTER_ID].effects_box == null)
+	s.free()
+
+
+func _test_the_2d_piano_roll_edits_notes() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.double_click = true
+	click.position = Vector2(a.x_of(1.0), a.lane_top(2) + 30.0)
+	a._gui_input(click)
+	var pr := s.piano_roll
+	check("double-clicking a MIDI clip opens its notes in place of the arrangement", pr.is_open() and pr.id == "t3"
+			and pr.index == 0 and not a.visible)
+	pr.size = Vector2(1000, 600)
+	pr.view_start = 0.0
+	pr.pixels_per_second = 200.0
+	pr._scroll_to(72)
+	var riff := host.project().track("t3").clips[0]
+	var row := DawKitPianoRoll.KEY_HEIGHT * 0.5
+	check("a note is found where it is drawn", pr.note_at(Vector2(pr.x_of(0.25), pr.y_of(60) + row)) == {"note": 0, "zone": "move"})
+	check("and its right end lengthens it", pr.note_at(Vector2(pr.x_of(0.5) - 2.0, pr.y_of(60) + row))["zone"] == "end")
+	check("a row is a pitch", pr.pitch_at(pr.y_of(67) + row) == 67 and DawKitPianoRoll.pitch_name(60) == "C4")
+	_mouse(pr, Vector2(pr.x_of(1.0) + 3.0, pr.y_of(67) + row), Vector2(pr.x_of(1.6), pr.y_of(67) + row))
+	check("dragging on an empty row draws a note on the grid", riff.note_count() == 3 and pr.find_note(1.0, 67) == 2
+			and is_equal_approx(riff.notes[2 * DawKitClip.NOTE_WIDTH + 1], 1.625) and pr.selected == 2 and host.undo_name() == "insert note")
+	_mouse(pr, Vector2(pr.x_of(0.1), pr.y_of(60) + row), Vector2(pr.x_of(0.35), pr.y_of(62) + row))
+	check("dragging a note moves it in time and pitch, keeping its length", pr.find_note(0.25, 62) == 0
+			and is_equal_approx(riff.notes[1], 0.75) and host.undo_name() == "move note")
+	_mouse(pr, Vector2(pr.x_of(1.0) - 2.0, pr.y_of(64) + row), Vector2(pr.x_of(1.3), pr.y_of(64) + row))
+	check("dragging its end makes it longer, to the grid", is_equal_approx(riff.notes[DawKitClip.NOTE_WIDTH + 1], 1.25))
+	_mouse(pr, Vector2(pr.x_of(0.5), pr.notes_bottom() + 6.0), Vector2(pr.x_of(0.5), pr.notes_bottom() + 6.0))
+	check("the top of the velocity lane is the loudest", int(riff.notes[DawKitClip.NOTE_WIDTH + 3]) == 127 and pr.selected == 1)
+	var right := InputEventMouseButton.new()
+	right.button_index = MOUSE_BUTTON_RIGHT
+	right.pressed = true
+	right.position = Vector2(pr.x_of(1.2), pr.y_of(67) + row)
+	pr._gui_input(right)
+	check("right-clicking a note deletes it", riff.note_count() == 2 and pr.find_note(1.0, 67) == -1)
+	host.move_note("t3", 0, 0, 0.3, 62)
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.keycode = KEY_Q
+	s._key(key)
+	check("Q pulls the notes onto the grid", is_equal_approx(riff.notes[0], 0.25) and host.undo_name() == "quantize")
+	pr.selected = 0
+	key.keycode = KEY_UP
+	s._key(key)
+	check("the up arrow takes the picked note up a semitone", int(riff.notes[2]) == 63 and pr.selected == 0)
+	key.keycode = KEY_DELETE
+	s._key(key)
+	check("Delete deletes the picked note, not the clip", riff.note_count() == 1 and host.project().track("t3").clips.size() == 1)
+	key.keycode = KEY_ESCAPE
+	s._key(key)
+	check("Esc goes back to the arrangement", not pr.is_open() and a.visible)
+	for _i in 9:
+		host.undo()
+	check("each edit was one step back", host.project().track("t3").clips[0].notes == _band().track("t3").clips[0].notes)
+	s.free()
+
+
+func _test_the_2d_ruler_edits_the_song() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	s.arrange.set_view(0.0, 50.0)
+	var r := s.arrange.ruler
+	r.size = Vector2(1000, DawKitRuler.HEIGHT)
+	var p := func() -> DawKitProject: return host.project()
+	var bars := DawKitRuler.HEIGHT - 10.0
+	_mouse(r, Vector2(r.x_of(1.0), bars), Vector2(r.x_of(3.1), bars))
+	check("dragging along the bars sets the loop's range, on the beat", is_equal_approx(p.call().loop_start, 1.0)
+			and is_equal_approx(p.call().loop_end, 3.0) and host.undo_name() == "loop range")
+	_mouse(r, Vector2(r.x_of(5.1), bars), Vector2(r.x_of(5.1), bars))
+	check("clicking the bars puts the playhead there", is_equal_approx(host.position(), 5.0))
+	_mouse(r, Vector2(r.x_of(3.0) + 1.0, bars), Vector2(r.x_of(4.0), bars))
+	check("dragging the loop's end moves it", is_equal_approx(p.call().loop_end, 4.0) and is_equal_approx(p.call().loop_start, 1.0))
+	var twice := InputEventMouseButton.new()
+	twice.button_index = MOUSE_BUTTON_LEFT
+	twice.pressed = true
+	twice.double_click = true
+	twice.position = Vector2(r.x_of(6.1), 8.0)
+	r._gui_input(twice)
+	check("double-clicking the markers' row makes a marker there", p.call().markers.size() == 1 and is_equal_approx(p.call().markers[0].time, 6.0))
+	_mouse(r, Vector2(r.x_of(6.0) + 2.0, 8.0), Vector2(r.x_of(7.0) + 2.0, 8.0))
+	check("dragging a marker moves it", is_equal_approx(p.call().markers[0].time, 7.0) and host.undo_name() == "edit marker")
+	r.start_rename("marker", 0)
+	check("a marker's name can be typed", r.editor != null)
+	r.finish_rename("Chorus")
+	check("and is kept", p.call().markers[0].name == "Chorus" and r.editor == null)
+	r.open_menu(Vector2(r.x_of(0.5), 8.0), Vector2(100, 100))
+	r._on_menu(DawKitRuler.MENU_ADD_REGION)
+	check("a region is made over the loop", p.call().regions.size() == 1 and is_equal_approx(p.call().regions[0].start, 1.0)
+			and is_equal_approx(p.call().regions[0].end, 4.0))
+	check("its ends are taken by their edges", r.hit_at(Vector2(r.x_of(4.0) - 2.0, 8.0))["kind"] == "region_end")
+	_mouse(r, Vector2(r.x_of(4.0) - 2.0, 8.0), Vector2(r.x_of(5.0), 8.0))
+	check("dragging a region's end stretches it", is_equal_approx(p.call().regions[0].end, 5.0))
+	_mouse(r, Vector2(r.x_of(2.0), 8.0), Vector2(r.x_of(2.5), 8.0))
+	check("dragging its middle moves it whole", is_equal_approx(p.call().regions[0].start, 1.5) and is_equal_approx(p.call().regions[0].end, 5.5))
+	r.open_menu(Vector2(r.x_of(3.0), 8.0), Vector2(100, 100))
+	r._on_menu(DawKitRuler.MENU_LOOP)
+	check("a region's menu loops it", is_equal_approx(p.call().loop_start, 1.5) and is_equal_approx(p.call().loop_end, 5.5))
+	r.open_change("tempo", -1, 8.0)
+	r._bpm.value = 90.0
+	r.apply_change()
+	check("a tempo change is set where it was asked", p.call().tempo_points.size() == 2
+			and is_equal_approx(p.call().tempo_map().bpm_at(9.0), 90.0) and is_equal_approx(p.call().tempo_map().bpm_at(2.0), 120.0))
+	var at := r.x_of(p.call().tempo_map().seconds_at(8.0))
+	check("a change is taken in its row", r.hit_at(Vector2(at + 3.0, DawKitRuler.MARK_ROW + 4.0)) == {"kind": "tempo", "index": 1})
+	_mouse(r, Vector2(at + 3.0, DawKitRuler.MARK_ROW + 4.0), Vector2(r.x_of(5.0) + 3.0, DawKitRuler.MARK_ROW + 4.0))
+	check("and dragged along the song, to a beat", is_equal_approx(p.call().tempo_points[1][0], 10.0))
+	r.open_change("meter", -1, 16.0)
+	r._numerator.value = 3
+	r._denominator.select(2)
+	r.apply_change()
+	check("a time signature change is set", p.call().meter().signature_at(17.0) == Vector2i(3, 4) and p.call().meter().signature_at(4.0) == Vector2i(4, 4))
+	r.remove_change("tempo", 1)
+	check("a change can be taken out", p.call().tempo_points.is_empty() and is_equal_approx(p.call().tempo, 120.0))
+	s.transport.count_in.item_selected.emit(2)
+	check("the count-in is set from the transport", host.count_in() == 2)
+	s.refresh()
+	check("and shown there", s.transport.count_in.selected == 2)
+	s.free()
+
+
+func _test_the_2d_arrange_draws_automation() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var below := a.lane_top(1)
+	a.show_lane("t1", "volume")
+	check("a lane shown makes its track's row taller", is_equal_approx(a.row_height(0), a.lane_height + DawKitArrange.AUTO_HEIGHT)
+			and is_equal_approx(a.lane_top(1), below + DawKitArrange.AUTO_HEIGHT))
+	check("and the rows under it are found where they now are", a.row_at(a.lane_top(1) + 5.0) == 1 and a.gap_at(a.lane_top(1)) == 1)
+	var top := a.lane_top(0) + a.lane_height
+	var lane := a.lane_at(Vector2(a.x_of(2.0), top + 20.0))
+	check("the lane is under its track's clips", lane.get("id") == "t1" and lane.get("target") == "volume" and is_equal_approx(lane.get("top", 0.0), top))
+	check("and a click in it is not a click on a clip", a.clip_at(Vector2(a.x_of(4.0), top + 20.0)).is_empty()
+			and not a.clip_at(Vector2(a.x_of(4.0), a.lane_top(0) + 20.0)).is_empty())
+	var y0 := DawKitArrange.lane_y(top, DawKitLook.fader_of(0.0))
+	_mouse(a, Vector2(a.x_of(1.0), y0), Vector2(a.x_of(1.0), y0))
+	var lane_of := func() -> DawKitAutomation: return host.project().track("t1").automation_of("volume")
+	check("clicking a lane puts a point there, on the fader's law", lane_of.call() != null and lane_of.call().points.size() == 1
+			and absf(lane_of.call().points[0][1]) < 0.6 and is_equal_approx(lane_of.call().points[0][0], 1.0) and host.undo_name() == "automation")
+	var y12 := DawKitArrange.lane_y(top, DawKitLook.fader_of(-12.0))
+	_mouse(a, Vector2(a.x_of(3.0), y12), Vector2(a.x_of(3.0), y12))
+	check("a second point", lane_of.call().points.size() == 2 and absf(lane_of.call().points[1][1] + 12.0) < 0.6)
+	check("and the lane reads between them", absf(lane_of.call().value_at(2.0) + 6.0) < 0.6)
+	_mouse(a, Vector2(a.x_of(3.0), y12), Vector2(a.x_of(4.1), y12))
+	check("dragging a point moves it, to the beat", lane_of.call().points.size() == 2 and is_equal_approx(lane_of.call().points[1][0], 4.0))
+	var right := InputEventMouseButton.new()
+	right.button_index = MOUSE_BUTTON_RIGHT
+	right.pressed = true
+	right.position = Vector2(a.x_of(1.0), y0)
+	a._gui_input(right)
+	check("right-clicking a point deletes it", lane_of.call().points.size() == 1)
+	check("a lane says its value as the control would", DawKitEnvelope.text_of("pan", -0.4) == "L40"
+			and DawKitEnvelope.text_of("mute", 1.0) == "muted" and DawKitEnvelope.text_of("fx:0:1", 0.25) == "25%")
+	check("pan is drawn left at the top", is_equal_approx(DawKitEnvelope.level_of("pan", -1.0), 1.0)
+			and is_equal_approx(DawKitEnvelope.value_of("pan", 0.5), 0.0))
+	a.open_automation_menu("t3", Vector2(10, 10))
+	check("the automation menu lists the track's controls", a._auto_menu.get_item_text(3) == "Volume" and a._auto_menu.get_item_text(4) == "Pan")
+	a._on_automation_menu(4, a._auto_menu)
+	check("and shows the lane picked", a.lanes_of("t3") == ["pan"])
+	a._on_automation_menu(1, a._auto_menu)
+	check("or hides them all", a.lanes_of("t3").is_empty())
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = Vector2(DawKitArrange.HEADER_WIDTH - 15.0, top + 10.0)
+	a._gui_input(click)
+	check("a lane's X hides it", a.lanes_of("t1").is_empty() and is_equal_approx(a.row_height(0), a.lane_height))
+	s.free()
+
+
+func _test_the_2d_studio_saves_and_opens() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var titles := []
+	s.title_changed.connect(func(text: String): titles.append(text))
+	check("a project as it comes is not dirty", not host.is_dirty())
+	host.set_volume("t1", -3.0)
+	s.refresh()
+	check("an edit is a change to save, said on the transport and the status line", host.is_dirty()
+			and s.transport.title_label.text.begins_with("* ") and s.status_file.text == "not saved to a file yet")
+	check("and in the window's title", not titles.is_empty() and titles.back().begins_with("* Band"))
+	host.save_project()
+	check("saving a project with no file yet says so", s.status.text.contains("Save as"))
+	var path := "user://dawkit_2d_test.dawproject"
+	host.save_project_as(path.get_basename())
+	s.refresh()
+	check("saving as writes the file, with its extension", FileAccess.file_exists(path) and host.project_file() == path)
+	check("and it is saved", not host.is_dirty() and s.status_file.text.contains("saved") and not s.status_file.text.contains("unsaved")
+			and s.status.text.begins_with("Saved"))
+	check("it is the first of the recent files", host.recent_files().size() == 1 and host.recent_files()[0] == path)
+	check("the title loses its *", titles.back() == "Band - dawkit_2d_test.dawproject")
+	host.set_volume("t1", -4.0)
+	s.file_item(DawKitTransportBar.FILE_NEW)
+	check("a new project with unsaved changes asks first", s.confirm != null and s.confirm.visible
+			and host.project().tracks.size() == 3)
+	s.confirm.confirmed.emit()
+	s.confirm.hide()
+	check("and starts one once told to", host.project().tracks.is_empty() and host.project_file().is_empty() and not host.is_dirty())
+	s.file_item(DawKitTransportBar.FILE_RECENT)
+	s.refresh()
+	check("a recent file opens", host.project().tracks.size() == 3 and host.project_file() == path
+			and is_equal_approx(host.project().track("t1").volume_db, -3.0) and s.arrange.headers.size() == 3)
+	host.set_volume("t1", -5.0)
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.ctrl_pressed = true
+	key.keycode = KEY_S
+	s._key(key)
+	check("Ctrl+S saves where it was opened from", not host.is_dirty())
+	host.open_project("user://no_such_file.dawproject")
+	check("a file that will not open is said, and the project stays", s.status.text.begins_with("Could not open")
+			and host.project().tracks.size() == 3)
+	s.transport._fill_file_menu()
+	var menu := s.transport.file_menu.get_popup()
+	check("FILE has the project's verbs, rendering left out where the host cannot",
+			not menu.is_item_disabled(menu.get_item_index(DawKitTransportBar.FILE_SAVE_AS))
+			and menu.is_item_disabled(menu.get_item_index(DawKitTransportBar.FILE_RENDER)))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	s.free()
+
+
+func _test_the_2d_studio_says_what_is_under_the_pointer() -> void:
+	var host := DawKitProjectHost.new(_band())
+	host.add_marker(1.0, "Verse")
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var said := a.describe_at(Vector2(a.x_of(3.0), a.lane_top(0) + 30.0))
+	check("a clip is said: its track, name, where it is and its file", said.begins_with("Drums: Loop, 2.1.00 to 4.1.00") and said.contains("loop.wav"))
+	check("a MIDI clip says its notes", a.describe_at(Vector2(a.x_of(1.0), a.lane_top(2) + 30.0)).contains("2 notes"))
+	check("an empty stretch says the track and the time", a.describe_at(Vector2(a.x_of(8.0), a.lane_top(1) + 30.0)) == "Keys at 5.1.00")
+	a.show_lane("t1", "volume")
+	var lane_said := a.describe_at(Vector2(a.x_of(3.0), a.lane_top(0) + a.lane_height + 20.0))
+	check("a lane says its value there", lane_said.begins_with("Volume at 2.3.00: 0.0 dB"))
+	a.ruler.size = Vector2(1000, DawKitRuler.HEIGHT)
+	check("the ruler says a marker", a.ruler.describe_at(Vector2(a.ruler.x_of(1.0) + 3.0, 8.0)).begins_with("Marker Verse at 1.3.00"))
+	check("and the tempo", a.ruler.describe_at(Vector2(a.ruler.x_of(0.0) + 8.0, DawKitRuler.MARK_ROW + 4.0)).begins_with("Tempo 120 bpm"))
+	s.open_clip("t3", 0)
+	var pr := s.piano_roll
+	pr.size = Vector2(1000, 600)
+	pr.view_start = 0.0
+	pr.pixels_per_second = 200.0
+	pr._scroll_to(72)
+	check("the piano roll says a note", pr.describe_at(Vector2(pr.x_of(0.25), pr.y_of(60) + 7.0)).begins_with("C4, velocity 100, 1.1.00 to 1.2.00"))
+	s.show_hover("over here")
+	check("the status line shows what is under the pointer", s.status.text == "over here")
+	s.say("Saved.")
+	s.show_hover("over there")
+	check("but not over something just said", s.status.text == "Saved.")
+	pr.close()
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.keycode = KEY_R
+	s._key(key)
+	check("R loops, as in Reaper", host.project().loop_on)
+	host.seek(2.0)
+	key.keycode = KEY_M
+	s._key(key)
+	check("M puts a marker at the playhead", host.project().markers.size() == 2 and is_equal_approx(host.project().markers[1].time, 2.0))
+	key.keycode = KEY_END
+	s._key(key)
+	check("End goes to the end of the song", is_equal_approx(host.position(), 6.0))
+	var pps := a.pixels_per_second
+	key.keycode = KEY_EQUAL
+	s._key(key)
+	check("= zooms in", a.pixels_per_second > pps)
+	key.keycode = KEY_F1
+	s._key(key)
+	check("F1 lists every key", s.key_list != null and s.key_list.visible
+			and s.key_list.get_node("Grid").get_child_count() == DawKitStudio.KEY_LIST.size() * 2)
+	s.key_list.hide()
+	check("a fader's tooltip says its level", (s.mixer.strips["t2"] as DawKitStrip).fader.tooltip_text.contains("-6.0 dB"))
+	s.free()
+	DawKitLook.use_signals({"mute": Color(0.3, 0.6, 1.0)})
+	DawKitLook.set_text_scale(1.5)
+	var bigger := _studio(DawKitProjectHost.new(_band()))
+	var mute: Button = (bigger.mixer.strips["t1"] as DawKitStrip).mute
+	check("a host's signal colours are the interface's", (mute.get_theme_stylebox("pressed") as StyleBoxFlat).bg_color == Color(0.3, 0.6, 1.0))
+	check("and its text size", bigger.theme.default_font_size == 20 and DawKitLook.SMALL_FONT_SIZE == 17)
+	var least := bigger.get_combined_minimum_size()
+	check("big text still fits a 720p window, scrolling where it must (%s)" % least, least.x <= 1280.0 and least.y <= 720.0)
+	bigger.free()
+	DawKitLook.use_signals({})
+	DawKitLook.set_text_scale(1.0)
+	check("and both go back", DawKitLook.MUTE == DawKitLook.SIGNALS_AS_MADE["mute"] and DawKitLook.FONT_SIZE == 13)

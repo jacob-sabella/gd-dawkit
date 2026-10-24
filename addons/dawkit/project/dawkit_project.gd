@@ -87,6 +87,87 @@ func children_of(folder_id: String) -> Array[DawKitTrack]:
 	return out
 
 
+## How many folders a track is inside.
+func depth_of(t: DawKitTrack) -> int:
+	var depth := 0
+	var at := t
+	while at != null and not at.parent.is_empty() and depth <= tracks.size():
+		at = track(at.parent)
+		depth += 1
+	return depth
+
+
+## Whether `t` is inside `folder_id`, at any depth.
+func is_inside(t: DawKitTrack, folder_id: String) -> bool:
+	var up := t.parent
+	var steps := 0
+	while not up.is_empty() and steps <= tracks.size():
+		if up == folder_id:
+			return true
+		var p := track(up)
+		up = p.parent if p != null else ""
+		steps += 1
+	return false
+
+
+## A track and every track after it that is inside it: what moves when a folder moves.
+func block_of(t: DawKitTrack) -> Array[DawKitTrack]:
+	var out: Array[DawKitTrack] = [t]
+	for i in range(tracks.find(t) + 1, tracks.size()):
+		if is_inside(tracks[i], t.id):
+			out.append(tracks[i])
+		else:
+			break
+	return out
+
+
+## Moves track `id`, with what is in it, to be at `position` in the order after the move (0 the
+## first), inside folder `parent_id` ("" for none). False, and nothing moved, when that folder is
+## the track or in it, or would not hold it there: a folder's tracks follow it, together.
+func move_track(id: String, position: int, parent_id: String) -> bool:
+	var t := track(id)
+	if t == null or t == master or (not parent_id.is_empty() and track(parent_id) == null):
+		return false
+	var block := block_of(t)
+	if block.any(func(b: DawKitTrack) -> bool: return b.id == parent_id):
+		return false
+	var order: Array[DawKitTrack] = tracks.filter(func(x: DawKitTrack) -> bool: return not block.has(x))
+	var at := clampi(position, 0, order.size())
+	for k in block.size():
+		order.insert(at + k, block[k])
+	var was := t.parent
+	t.parent = parent_id
+	var open: Array[String] = []
+	for x in order:
+		while not open.is_empty() and open.back() != x.parent:
+			open.pop_back()
+		if not x.parent.is_empty() and open.is_empty():
+			t.parent = was
+			return false
+		open.append(x.id)
+	tracks = order
+	return true
+
+
+## Takes a track away, and the sends to it and its folder's hold on what was in it: those move
+## out to the folder it was in.
+func remove_track(id: String) -> bool:
+	var t := track(id)
+	if t == null or t == master:
+		return false
+	for x in tracks:
+		if x.parent == id:
+			x.parent = t.parent
+		for sd in x.sends.duplicate():
+			if sd.target == id:
+				x.sends.erase(sd)
+		for a in x.automation.duplicate():
+			if a.target == "send:" + id:
+				x.automation.erase(a)
+	tracks.erase(t)
+	return true
+
+
 ## Where a track's signal goes: its folder's channel, or the master.
 func output_of(t: DawKitTrack) -> DawKitTrack:
 	if t == master:
