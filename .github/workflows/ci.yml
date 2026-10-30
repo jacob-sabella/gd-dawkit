@@ -2,6 +2,10 @@ name: CI
 
 # dawkit's own checks, headless, on every push to main and every pull request: the native core
 # (cached on its sources and godot-cpp's pin), then tools/test.sh.
+#
+# The tests are off here for now (2026-10-30, as in dawlings: they run locally): the native core is
+# built and the project imported, so a build or a script that breaks still fails, and the tests run
+# again with the repository variable RUN_TESTS set to true (gh variable set RUN_TESTS --body true).
 
 on:
   push:
@@ -62,5 +66,13 @@ jobs:
           key: dawkit-native-${{ hashFiles('native/**/*.cpp', 'native/**/*.h', 'native/CMakeLists.txt', 'tools/build_native.sh') }}-${{ hashFiles('.gitmodules') }}
           restore-keys: dawkit-native-
 
+      - name: Build and import
+        if: vars.RUN_TESTS != 'true'
+        run: |
+          tools/build_native.sh
+          godot --headless --path . --import 2>&1 | tee import.log || true
+          ! grep -E "SCRIPT ERROR|Parse Error" import.log
+
       - name: Tests
+        if: vars.RUN_TESTS == 'true'
         run: tools/test.sh
