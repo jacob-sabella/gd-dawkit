@@ -64,7 +64,7 @@ func use(p: DawKitProject) -> void:
 func can(edit: StringName) -> bool:
 	return edit in [VOLUME, PAN, MUTE, MASTER_MUTE, SOLO, ARM, TRANSPORT, RECORD, SEEK, LOOP, METRONOME, TEMPO,
 			MOVE_CLIP, UNDO, SELECT, EDIT_CLIPS, TRACKS, TRACK_ORDER, EFFECTS, EFFECT_ORDER, SENDS, NOTES,
-			MARKERS, LOOP_RANGE, TEMPO_MAP, COUNT_IN, AUTOMATION, FILES, SAVE]
+			MARKERS, LOOP_RANGE, TEMPO_MAP, COUNT_IN, AUTOMATION, FILES, SAVE, MONITOR]
 
 
 func position() -> float:
@@ -110,6 +110,14 @@ func set_solo(id: String, on: bool) -> void:
 
 func set_armed(id: String, on: bool) -> void:
 	_track_edit(id, "arm", func(t: DawKitTrack): t.armed = on)
+
+
+func set_input(id: String, input: String) -> void:
+	_track_edit(id, "input", func(t: DawKitTrack): t.input = input)
+
+
+func set_monitor(id: String, mode: int) -> void:
+	_track_edit(id, "monitor", func(t: DawKitTrack): t.monitor = clampi(mode, 0, 2) as DawKitTrack.Monitor)
 
 
 func play() -> void:

@@ -2,7 +2,8 @@ class_name DawKitTrackHeader
 extends Panel
 
 ## A track's header, to the left of its lane: its colour, a fold for a folder, its name, mute,
-## solo and arm, its automation lanes (A), and how many clips it has. Double-click the name to rename it; drag the header
+## solo and arm, its input monitoring (I: off, on, auto), what it records from (IN, a menu of the
+## host's inputs), its automation lanes (A), and what it records from and how many clips it has. Double-click the name to rename it; drag the header
 ## to move the track; right-click for the track's menu. The arrangement does the moving and the
 ## menu (DawKitArrange); this says what was asked.
 
@@ -26,11 +27,17 @@ var name_label: Label
 var mute: Button
 var solo: Button
 var arm: Button
+## Off, on, auto: a press steps it on. Lit while on, lit and marked A on auto.
+var monitor: Button
+## What it records from: a menu of the host's inputs, and none chosen.
+var input: MenuButton
 var lanes: Button
 var clips_label: Label
 var editor: LineEdit
 
 var _pressed_at := Vector2.INF
+var _monitor_mode := 0
+var _input := ""
 var _dragging := false
 
 
@@ -72,6 +79,28 @@ func _init(with_host: DawKitHost, t: DawKitTrack, at_depth: int, is_folder: bool
 	solo.name = "Solo"
 	arm = DawKitStrip.toggle(host, "R", "Arm to record", DawKitLook.ARM, DawKitHost.ARM, func(on: bool): host.set_armed(id, on))
 	arm.name = "Arm"
+	monitor = Button.new()
+	monitor.name = "Monitor"
+	monitor.focus_mode = Control.FOCUS_NONE
+	monitor.custom_minimum_size = Vector2(24, 22)
+	monitor.disabled = not host.can(DawKitHost.MONITOR)
+	monitor.add_theme_color_override("font_pressed_color", Color(0.08, 0.08, 0.09))
+	monitor.toggle_mode = true
+	monitor.add_theme_stylebox_override("pressed", DawKitLook.box(DawKitLook.LOOP, 3))
+	monitor.add_theme_stylebox_override("hover_pressed", DawKitLook.box(DawKitLook.LOOP.lightened(0.1), 3))
+	monitor.pressed.connect(func(): host.set_monitor(id, (_monitor_mode + 1) % 3))
+	input = MenuButton.new()
+	input.name = "Input"
+	input.text = "IN"
+	input.flat = false
+	input.focus_mode = Control.FOCUS_NONE
+	input.custom_minimum_size = Vector2(28, 22)
+	input.disabled = not host.can(DawKitHost.INPUTS)
+	input.about_to_popup.connect(_list_inputs)
+	input.get_popup().id_pressed.connect(func(at: int):
+		var all := _choices()
+		if at >= 0 and at < all.size():
+			host.set_input(id, all[at][0]))
 	lanes = Button.new()
 	lanes.name = "Lanes"
 	lanes.text = "A"
@@ -80,7 +109,7 @@ func _init(with_host: DawKitHost, t: DawKitTrack, at_depth: int, is_folder: bool
 	lanes.custom_minimum_size = Vector2(22, 22)
 	lanes.tooltip_text = "Automation lanes"
 	lanes.pressed.connect(func(): automation_asked.emit(id, lanes.global_position + Vector2(0, lanes.size.y)))
-	for b in [mute, solo, arm, lanes]:
+	for b in [mute, solo, arm, monitor, input, lanes]:
 		row.add_child(b)
 	clips_label = Label.new()
 	clips_label.name = "Clips"
@@ -98,8 +127,43 @@ func show_track(t: DawKitTrack) -> void:
 	mute.set_pressed_no_signal(t.mute)
 	solo.set_pressed_no_signal(t.solo)
 	arm.set_pressed_no_signal(t.armed)
+	_monitor_mode = int(t.monitor)
+	monitor.text = ["I", "I", "IA"][_monitor_mode]
+	monitor.set_pressed_no_signal(_monitor_mode != DawKitTrack.Monitor.OFF)
+	monitor.tooltip_text = "Monitor its input: %s (press for %s)" % [MONITOR_WORDS[_monitor_mode], MONITOR_WORDS[(_monitor_mode + 1) % 3]]
+	_input = t.input
+	var from := input_name(t.input)
+	input.tooltip_text = "Records from: %s" % from
 	var n := t.clips.size()
-	clips_label.text = "no clips" if n == 0 else ("1 clip" if n == 1 else "%d clips" % n)
+	var count := "no clips" if n == 0 else ("1 clip" if n == 1 else "%d clips" % n)
+	clips_label.text = count if t.input.is_empty() or not host.can(DawKitHost.INPUTS) else "%s  ·  %s" % [from, count]
+
+
+const MONITOR_WORDS := ["off", "on", "auto, while armed and stopped or recording"]
+
+
+## The host's inputs and none chosen, in the menu's order.
+func _choices() -> Array:
+	var out: Array = host.inputs().duplicate()
+	out.append(["", "None chosen"])
+	return out
+
+
+## A track input's name from the host's list; "none chosen" for "".
+func input_name(input_id: String) -> String:
+	for c in _choices():
+		if c[0] == input_id:
+			return String(c[1]) if input_id != "" else "none chosen"
+	return input_id
+
+
+func _list_inputs() -> void:
+	var menu := input.get_popup()
+	menu.clear()
+	var all := _choices()
+	for i in all.size():
+		menu.add_radio_check_item(String(all[i][1]), i)
+		menu.set_item_checked(i, all[i][0] == _input)
 
 
 func show_fold(open: bool) -> void:

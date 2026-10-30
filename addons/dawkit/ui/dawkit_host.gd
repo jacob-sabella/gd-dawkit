@@ -68,6 +68,10 @@ const RENDER := &"render"
 ## Select clips; and edit them: split, delete, duplicate, trim, fade, gain, mute.
 const SELECT := &"select"
 const EDIT_CLIPS := &"edit_clips"
+## Choose what a track records from, out of `inputs()` (INPUTS); and how its input is heard through
+## it (MONITOR): off, on, or auto -- heard while it is armed and the song is stopped or recording.
+const INPUTS := &"inputs"
+const MONITOR := &"monitor"
 
 
 ## The project as it is now. The interface reads it and never writes to it.
@@ -127,6 +131,21 @@ func set_solo(_id: String, _on: bool) -> void:
 
 
 func set_armed(_id: String, _on: bool) -> void:
+	pass
+
+
+## What a track can record from here, [id, name] each, in the host's own order: its devices, a
+## side of one, its keys. A track's `input` is one of the ids, or "" for none chosen.
+func inputs() -> Array:
+	return []
+
+
+func set_input(_id: String, _input: String) -> void:
+	pass
+
+
+## A track's monitoring, a DawKitTrack.Monitor.
+func set_monitor(_id: String, _mode: int) -> void:
 	pass
 
 
