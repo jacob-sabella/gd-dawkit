@@ -4,8 +4,9 @@ extends Control
 ## The ruler over the arrangement's lanes, in three rows: markers and regions along the top, the
 ## tempo's and time signature's changes under them, and the bars, with the loop's range.
 ##
-## Bars: click to put the playhead there (on the beat unless Alt is held), drag to set the loop's
-## range, drag either end of the range to move it. Markers and regions: double-click the top row
+## Bars: click to put the playhead there (pulled onto the arrangement's grid when it is near a
+## line, unless Alt is held), drag to set the loop's range, drag either end of the range to move
+## it; every time here is pulled onto the grid the same way. Markers and regions: double-click the top row
 ## for a marker, drag one to move it (a region by its middle or either end), double-click one to
 ## rename it. Changes: double-click a change to set it, or the row for a tempo change there; drag a
 ## change along the song. Right-click anywhere on it for the rest: a region from the loop's range,
@@ -138,9 +139,10 @@ func describe_at(at: Vector2) -> String:
 	return "%s  (click to go there, drag for the loop)" % where
 
 
-## The song second nearest `seconds` on a beat, or `seconds` itself when free.
+## `seconds` pulled onto the arrangement's grid when a line is near it (DawKitArrange.magnet), or
+## `seconds` itself when free.
 func snap(seconds: float, free := false) -> float:
-	return maxf(seconds if free else arrange.snap(seconds), 0.0)
+	return maxf(seconds if free else arrange.magnet(seconds), 0.0)
 
 
 func _gui_input(event: InputEvent) -> void:

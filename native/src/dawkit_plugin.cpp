@@ -49,11 +49,39 @@ DawKitPlugin::DawKitPlugin() {
 	merged.reserve(4096);
 }
 
+// Loads running now, any thread's.
+static std::atomic<int> running_loads{ 0 };
+static std::atomic<int> next_owner{ 1 };
+
 DawKitPlugin::~DawKitPlugin() {
 	alive().erase(this);
+	// A window being opened is waited for (its thread is working on this plugin) and closed.
+	if (opening) {
+		opening->cancelled = true;
+		take_over_opening(true);
+	}
+	// A load under way is waited for: its thread writes into this. One still waiting for its turn
+	// is called off, so a project closed while its plugins load waits only for the one loading.
+	if (loading) {
+		loading->cancelled.store(true);
+	}
+	if (loading && loading->worker.joinable()) {
+		loading->worker.join();
+	}
+	if (loading) {
+		dawkit::RunLoop::get().release(loading->owner);
+		if (loading->made) {
+			std::lock_guard<std::mutex> hold(dawkit::load_lock());
+			loading->made.reset();
+		}
+		loading.reset();
+	}
 	editor_close();
 	if (plugin) {
 		plugin->deactivate();
+		// Not while another is being made: its library may be this one's.
+		std::lock_guard<std::mutex> hold(dawkit::load_lock());
+		plugin.reset();
 	}
 }
 
@@ -104,6 +132,7 @@ Array DawKitPlugin::scan_file(const String &format, const String &path) {
 	std::string problem;
 	std::vector<dawkit::PluginInfo> found;
 	std::string f = std_str(format);
+	std::lock_guard<std::mutex> hold(dawkit::load_lock());
 	if (f == "CLAP") {
 		found = dawkit::scan_clap(std_str(path), problem);
 	} else if (f == "VST3") {
@@ -118,6 +147,10 @@ Array DawKitPlugin::scan_file(const String &format, const String &path) {
 }
 
 void DawKitPlugin::pump() {
+#ifdef DAWKIT_HOSTS_PLUGINS
+	// Whatever a plugin's processes put on the desktop while one loads or its window is open.
+	dawkit::EditorWindow::guard_desktop(loads_running());
+#endif
 	dawkit::RunLoop::get().pump();
 	// Copied: a plugin's own callback may free another.
 	std::vector<DawKitPlugin *> all(alive().begin(), alive().end());
@@ -130,6 +163,11 @@ void DawKitPlugin::pump() {
 
 void DawKitPlugin::main_thread() {
 	if (!plugin) {
+		return;
+	}
+	// While its window opens on another thread, nothing else of its main thread's runs: the
+	// opening thread is standing in for it.
+	if (opening && take_over_opening(false)) {
 		return;
 	}
 	plugin->main_thread();
@@ -146,15 +184,29 @@ void DawKitPlugin::main_thread() {
 
 // --- one plugin -------------------------------------------------------------------------------
 
-bool DawKitPlugin::load(const Dictionary &d) {
-	editor_close();
-	plugin.reset();
+static dawkit::PluginInfo info_of(const Dictionary &d) {
 	dawkit::PluginInfo info;
 	info.format = std_str(d.get("format", ""));
 	info.id = std_str(d.get("id", ""));
 	info.path = std_str(d.get("path", ""));
 	info.name = std_str(d.get("name", ""));
+	info.vendor = std_str(d.get("vendor", ""));
+	info.version = std_str(d.get("version", ""));
+	info.category = std_str(d.get("category", ""));
+	info.instrument = d.get("instrument", false);
+	info.has_editor = d.get("has_editor", false);
+	return info;
+}
+
+bool DawKitPlugin::load(const Dictionary &d) {
+	if (loading) {
+		wait_loaded();
+	}
+	editor_close();
+	dawkit::PluginInfo info = info_of(d);
 	std::string why;
+	std::lock_guard<std::mutex> hold(dawkit::load_lock());
+	plugin.reset();
 #ifdef DAWKIT_HOSTS_PLUGINS
 	plugin = dawkit::load_plugin(info, why);
 #else
@@ -164,11 +216,163 @@ bool DawKitPlugin::load(const Dictionary &d) {
 	return plugin != nullptr;
 }
 
+// What `begin_load` has done on its thread (or, for LV2, on this one): made, set and activated.
+void DawKitPlugin::load_job(Loading *job, bool own_thread) {
+	{
+		// One at a time, whoever asks: a plugin's library may not take two being made at once.
+		std::lock_guard<std::mutex> hold(dawkit::load_lock());
+		if (own_thread) {
+			dawkit::stand_in_for_main(job->owner);
+		}
+#ifdef DAWKIT_HOSTS_PLUGINS
+		if (job->cancelled.load()) {
+			job->why = "it was let go of before it loaded";
+		} else {
+			dawkit::EditorWindow::loading(true);
+			job->made = dawkit::load_plugin(job->asked, job->why);
+			if (job->made && !job->state.empty() && !job->made->set_state(job->state)) {
+				job->warning = job->made->error();
+			}
+			if (job->made && !job->made->activate(job->rate, job->max_block)) {
+				job->why = job->made->error();
+				// Unmade here, still standing in for the main thread, as it was made.
+				job->made.reset();
+			}
+			// Whether it has a window is found by making one and letting it go, which for yabridge's
+			// is its Wine host making a whole window (seconds): asked here, and kept, so the main
+			// thread asking later (a tablet deciding whether to offer it) is answered at once.
+			if (job->made && job->made->is_bridged()) {
+				job->made->editor_supported();
+			}
+			dawkit::EditorWindow::loading(false);
+		}
+#else
+		job->why = "plugins are not hosted on this system";
+#endif
+		if (own_thread) {
+			dawkit::stand_in_for_main(0);
+		}
+	}
+	running_loads.fetch_sub(1);
+	job->done.store(true, std::memory_order_release);
+}
+
+bool DawKitPlugin::begin_load(const Dictionary &d, const PackedByteArray &state, double rate, int block) {
+	if (loading) {
+		return false;
+	}
+	editor_close();
+	if (plugin) {
+		plugin->deactivate();
+		std::lock_guard<std::mutex> hold(dawkit::load_lock());
+		plugin.reset();
+	}
+	problem = String();
+	warning = String();
+#ifdef DAWKIT_HOSTS_PLUGINS
+	dawkit::EditorWindow::prepare_display();
+#endif
+	loading = std::make_unique<Loading>();
+	Loading *job = loading.get();
+	job->owner = next_owner.fetch_add(1);
+	job->asked = info_of(d);
+	job->state.assign(state.ptr(), state.ptr() + state.size());
+	job->rate = rate;
+	job->max_block = std::max(block, 32);
+	max_block = job->max_block;
+	running_loads.fetch_add(1);
+	// LV2 is made here, on the main thread, as before: lilv's world is one for every LV2 plugin,
+	// and read on the main thread by their windows and their parameters' words, and it is not made
+	// to be used from two threads at once. LV2 plugins are native and quick to make; the slow ones
+	// (yabridge's, which start a Windows process) are VST3 and CLAP.
+	if (job->asked.format == "LV2") {
+		load_job(job, false);
+		return true;
+	}
+	job->worker = std::thread([job]() { load_job(job, true); });
+	return true;
+}
+
+bool DawKitPlugin::loads_running() {
+	return running_loads.load() > 0;
+}
+
+PackedStringArray DawKitPlugin::take_desktop_windows() {
+	PackedStringArray out;
+#ifdef DAWKIT_HOSTS_PLUGINS
+	for (const std::string &t : dawkit::EditorWindow::take_left_on_desktop()) {
+		out.push_back(str(t));
+	}
+#endif
+	return out;
+}
+
+void DawKitPlugin::take_over_load() {
+	if (!loading) {
+		return;
+	}
+	if (loading->worker.joinable()) {
+		loading->worker.join();
+	}
+	plugin = std::move(loading->made);
+	problem = plugin ? String() : str(loading->why.empty() ? std::string("it would not load") : loading->why);
+	warning = str(loading->warning);
+	// Its timers and the descriptors it watches are the main thread's now.
+	dawkit::RunLoop::get().release(loading->owner);
+	loading.reset();
+}
+
+bool DawKitPlugin::is_loading() {
+	if (!loading) {
+		return false;
+	}
+	if (!loading->done.load(std::memory_order_acquire)) {
+		return true;
+	}
+	take_over_load();
+	return false;
+}
+
+bool DawKitPlugin::wait_loaded() {
+	if (loading) {
+		take_over_load();
+	}
+	return plugin != nullptr;
+}
+
+PackedInt32Array DawKitPlugin::shown_params(int limit) const {
+	PackedInt32Array out;
+	if (!plugin) {
+		return out;
+	}
+	int n = plugin->param_count();
+	for (int i = 0; i < n && out.size() < limit; i++) {
+		const dawkit::ParamInfo &p = plugin->param(i);
+		if (!p.hidden && p.automatable && !p.read_only) {
+			out.push_back(i);
+		}
+	}
+	if (out.is_empty()) {
+		for (int i = 0; i < n && out.size() < limit; i++) {
+			if (!plugin->param(i).hidden) {
+				out.push_back(i);
+			}
+		}
+	}
+	return out;
+}
+
 Dictionary DawKitPlugin::info() const {
+	if (loading) {
+		return dict_of(loading->asked);
+	}
 	return plugin ? dict_of(plugin->info()) : Dictionary();
 }
 
 bool DawKitPlugin::is_instrument() const {
+	if (loading) {
+		return loading->asked.instrument;
+	}
 	return plugin && plugin->info().instrument;
 }
 
@@ -183,6 +387,9 @@ bool DawKitPlugin::activate(double rate, int block) {
 }
 
 void DawKitPlugin::deactivate() {
+	if (opening) {
+		take_over_opening(true);
+	}
 	if (plugin) {
 		plugin->deactivate();
 	}
@@ -265,6 +472,15 @@ bool DawKitPlugin::take_params_changed() {
 PackedByteArray DawKitPlugin::get_state() {
 	PackedByteArray out;
 	std::vector<uint8_t> bytes;
+	if (loading) {
+		// Still loading: the state it is being given is the state it has.
+		bytes = loading->state;
+		out.resize((int64_t)bytes.size());
+		if (!bytes.empty()) {
+			std::memcpy(out.ptrw(), bytes.data(), bytes.size());
+		}
+		return out;
+	}
 	if (plugin && plugin->get_state(bytes)) {
 		out.resize((int64_t)bytes.size());
 		if (!bytes.empty()) {
@@ -398,6 +614,10 @@ bool DawKitPlugin::editor_open() {
 		return false;
 	}
 	if (editor) {
+		// Closed while it was still opening, and asked for again: it is opening still.
+		if (opening) {
+			opening->cancelled = false;
+		}
 		return true;
 	}
 	std::string why;
@@ -405,11 +625,34 @@ bool DawKitPlugin::editor_open() {
 		problem = str(why);
 		return false;
 	}
+	// Ours, made here (the X connection it is on is the main thread's): quick.
 	editor = std::make_unique<dawkit::EditorWindow>();
 	if (!editor->create(640, 480, why)) {
 		problem = str(why);
 		editor.reset();
 		return false;
+	}
+	if (plugin->is_bridged()) {
+		// The plugin's, made by yabridge's Wine host, in its own process: asked for from a thread of
+		// its own, which stands in for the main thread meanwhile, one plugin made or opened at a time.
+		opening = std::make_unique<Opening>();
+		Opening *job = opening.get();
+		job->owner = next_owner.fetch_add(1);
+		dawkit::HostedPlugin *hp = plugin.get();
+		uintptr_t parent = editor->window();
+		job->worker = std::thread([job, hp, parent]() {
+			{
+				std::lock_guard<std::mutex> hold(dawkit::load_lock());
+				dawkit::stand_in_for_main(job->owner);
+				job->ok = hp->editor_open(parent, job->width, job->height);
+				if (!job->ok) {
+					job->why = hp->error();
+				}
+				dawkit::stand_in_for_main(0);
+			}
+			job->done.store(true, std::memory_order_release);
+		});
+		return true;
 	}
 	int w = 0, h = 0;
 	if (!plugin->editor_open(editor->window(), w, h)) {
@@ -427,8 +670,44 @@ bool DawKitPlugin::editor_open() {
 #endif
 }
 
+bool DawKitPlugin::take_over_opening(bool wait) {
+	if (!opening) {
+		return false;
+	}
+	if (!wait && !opening->done.load(std::memory_order_acquire)) {
+		return true;
+	}
+	if (opening->worker.joinable()) {
+		opening->worker.join();
+	}
+	std::unique_ptr<Opening> job = std::move(opening);
+	// What the plugin asked of the run loop as its window opened is the main thread's now.
+	dawkit::RunLoop::get().release(job->owner);
+#ifdef DAWKIT_HOSTS_PLUGINS
+	if (!job->ok) {
+		problem = str(job->why.empty() ? std::string("its window would not open") : job->why);
+		editor.reset();
+	} else if (job->cancelled) {
+		// Closed while it opened: closed now that it has.
+		if (plugin) {
+			plugin->editor_close();
+		}
+		editor.reset();
+	} else if (job->width > 0 && job->height > 0 && editor) {
+		editor->resize(job->width, job->height);
+	}
+#endif
+	return false;
+}
+
 void DawKitPlugin::editor_close() {
 #ifdef DAWKIT_HOSTS_PLUGINS
+	if (opening) {
+		// Not waited for: the window is closed once it has opened (take_over_opening).
+		opening->cancelled = true;
+		picture.unref();
+		return;
+	}
 	if (editor) {
 		if (plugin) {
 			plugin->editor_close();
@@ -440,12 +719,12 @@ void DawKitPlugin::editor_close() {
 }
 
 bool DawKitPlugin::editor_is_open() const {
-	return editor != nullptr;
+	return editor != nullptr && !(opening && opening->cancelled);
 }
 
 bool DawKitPlugin::editor_capture() {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	if (!editor) {
+	if (!editor || (opening && take_over_opening(false)) || !editor) {
 		return false;
 	}
 	int w = 0, h = 0;
@@ -473,25 +752,25 @@ Vector2i DawKitPlugin::editor_size() const {
 
 void DawKitPlugin::editor_pointer_move(int x, int y) {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	if (editor) editor->pointer_move(x, y);
+	if (editor && !opening) editor->pointer_move(x, y);
 #endif
 }
 
 void DawKitPlugin::editor_pointer_button(int x, int y, int button, bool down) {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	if (editor) editor->pointer_button(x, y, button, down);
+	if (editor && !opening) editor->pointer_button(x, y, button, down);
 #endif
 }
 
 void DawKitPlugin::editor_wheel(int x, int y, int notches) {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	if (editor) editor->wheel(x, y, notches);
+	if (editor && !opening) editor->wheel(x, y, notches);
 #endif
 }
 
 void DawKitPlugin::editor_key(int keysym, bool down, int modifiers) {
 #ifdef DAWKIT_HOSTS_PLUGINS
-	if (editor) editor->key((unsigned long)keysym, down, (unsigned)modifiers);
+	if (editor && !opening) editor->key((unsigned long)keysym, down, (unsigned)modifiers);
 #endif
 }
 
@@ -504,6 +783,14 @@ void DawKitPlugin::_bind_methods() {
 	ClassDB::bind_static_method("DawKitPlugin", D_METHOD("pump"), &DawKitPlugin::pump);
 	ClassDB::bind_method(D_METHOD("load", "info"), &DawKitPlugin::load);
 	ClassDB::bind_method(D_METHOD("is_loaded"), &DawKitPlugin::is_loaded);
+	ClassDB::bind_method(D_METHOD("begin_load", "info", "state", "rate", "max_block"), &DawKitPlugin::begin_load,
+			DEFVAL(PackedByteArray()), DEFVAL(48000.0), DEFVAL(1024));
+	ClassDB::bind_method(D_METHOD("is_loading"), &DawKitPlugin::is_loading);
+	ClassDB::bind_method(D_METHOD("wait_loaded"), &DawKitPlugin::wait_loaded);
+	ClassDB::bind_method(D_METHOD("get_warning"), &DawKitPlugin::get_warning);
+	ClassDB::bind_method(D_METHOD("shown_params", "limit"), &DawKitPlugin::shown_params, DEFVAL(512));
+	ClassDB::bind_static_method("DawKitPlugin", D_METHOD("loads_running"), &DawKitPlugin::loads_running);
+	ClassDB::bind_static_method("DawKitPlugin", D_METHOD("take_desktop_windows"), &DawKitPlugin::take_desktop_windows);
 	ClassDB::bind_method(D_METHOD("info"), &DawKitPlugin::info);
 	ClassDB::bind_method(D_METHOD("get_error"), &DawKitPlugin::get_error);
 	ClassDB::bind_method(D_METHOD("is_instrument"), &DawKitPlugin::is_instrument);
@@ -534,6 +821,7 @@ void DawKitPlugin::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("editor_open"), &DawKitPlugin::editor_open);
 	ClassDB::bind_method(D_METHOD("editor_close"), &DawKitPlugin::editor_close);
 	ClassDB::bind_method(D_METHOD("editor_is_open"), &DawKitPlugin::editor_is_open);
+	ClassDB::bind_method(D_METHOD("editor_opening"), &DawKitPlugin::editor_opening);
 	ClassDB::bind_method(D_METHOD("editor_capture"), &DawKitPlugin::editor_capture);
 	ClassDB::bind_method(D_METHOD("editor_image"), &DawKitPlugin::editor_image);
 	ClassDB::bind_method(D_METHOD("editor_size"), &DawKitPlugin::editor_size);

@@ -13,9 +13,12 @@
 #include <cstring>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <set>
 #include <spawn.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
+#include <csignal>
 #include <poll.h>
 #include <thread>
 #include <fcntl.h>
@@ -32,7 +35,7 @@ namespace {
 	X(XSetErrorHandler) X(XQueryTree) X(XFree) X(XKeysymToKeycode) X(XPending) X(XNextEvent)           \
 	X(XSelectInput) X(XMoveWindow) X(XReparentWindow) X(XAddToSaveSet) X(XRemoveFromSaveSet)            \
 	X(XInternAtom) X(XGetWindowProperty) X(XMoveResizeWindow) X(XGetInputFocus) X(XSetInputFocus)  \
-	X(XChangeProperty)
+	X(XChangeProperty) X(XUnmapWindow)
 
 struct Xlib {
 #define DAWKIT_XLIB_FIELD(n) decltype(&::n) n = nullptr;
@@ -182,61 +185,159 @@ std::map<Window, Asked> &asked_at() {
 
 // --- Hyprland ------------------------------------------------------------------------------------
 //
-// A menu Wine draws for a plugin (JUCE's, under yabridge) is a window the window manager places,
-// and it does not survive being taken from it: moved into a window of ours, Wine works out where it
-// now is and the plugin closes it; given the focus, the plugin's own window loses it and the plugin
-// closes it too. So on Hyprland a rule puts those -- an .exe's window titled "menu" or not at all --
-// on a special workspace nobody looks at, as they map, without focus or animation, and they are
-// read and worked where they are. The rule is on only while a plugin's window is being used here,
-// and switches itself off a few seconds after it was last renewed, so a program that stops without
-// saying so does not leave every Wine program's menus going missing.
+// Hyprland keeps no X window off its screens: one made at x = -30000 is shown at x = -1, so the
+// window a plugin's window is kept in -- override-redirect, above everything -- was on the desktop,
+// at its top-left corner, for as long as the plugin's window was open ("Loading in the neural dsp
+// gojira ui opened it actually on my desktop as well", 2026-10-30; `xtree` showed ours at -1,0).
+// So on Hyprland ours is an ordinary window instead, named for what it is (CLASS below), and a
+// hook of ours in Hyprland's own Lua (GUARD below, through `hyprctl eval`) puts it on a special
+// workspace nobody looks at the moment it opens, floating, without the focus: a window there is
+// still drawn by its program and read back here, but never on anyone's screen.
+//
+// The same hook keeps the plugins' own stray windows off the desktop: while a plugin loads, and
+// while any plugin's window is open here, a window that opens untitled or titled "menu" (Wine's
+// menus and tooltips, a toolkit's helper windows) from a process this one started (yabridge's Wine
+// host) or one drawing in a window of ours goes there too. A titled one -- an activation, a licence,
+// a file to open, a message -- is somebody's to answer, and is left on the desktop (and said in the
+// game, `take_desktop_windows`). Those menus are then read and worked where they are. The hook goes
+// quiet by itself a few seconds after it was last renewed, so a program that stops without saying
+// so leaves nothing hidden; ours are hidden whenever they open, which only this engine makes.
+
+bool private_display = false; // plugins' windows on an X display of their own (prepare_display)
 
 bool on_hyprland() {
 	static int on = -1;
 	if (on < 0) {
 		on = getenv("HYPRLAND_INSTANCE_SIGNATURE") && !getenv("DAWKIT_NO_HYPRLAND_RULE") ? 1 : 0;
 	}
-	return on == 1;
+	return on == 1 && !private_display;
 }
 
-const char *HYPR_MENU_RULE = R"lua(
-if not dawkit_menu_rule then
-	dawkit_menu_rule = hl.window_rule({
-		name = "dawkit-menus",
-		match = { class = [[^.*\.exe$]], title = [[^(menu)?$]], xwayland = true },
-		workspace = "special:dawkit silent",
-		no_initial_focus = true,
-		no_anim = true,
-	})
+// What our windows are called, for the hook to know them by.
+const char *CLASS = "dawkit-plugin-window";
+
+// The hook, installed once (again after Hyprland reloads its config, which forgets it), then
+// renewed: `dawkit_guard.until_t` is when it goes quiet, `roots` the processes whose windows (and
+// whose children's) it takes. Formatted with: the version, seconds to stay on (0: off now), this
+// process, and the roots as a Lua table's body.
+const char *GUARD = R"lua(
+local g = dawkit_guard or {}
+dawkit_guard = g
+if g.version ~= %d then
+	if g.sub then g.sub:remove() end
+	if dawkit_menu_rule then dawkit_menu_rule:set_enabled(false) end
+	local function parent(p)
+		local f = io.open("/proc/" .. p .. "/stat")
+		if not f then return 0 end
+		local s = f:read("*a")
+		f:close()
+		return tonumber(s:match(".*%%) %%S+ (%%d+)")) or 0
+	end
+	local function ours(p)
+		for _ = 1, 40 do
+			if g.roots[p] then return true end
+			if p <= 1 then return false end
+			p = parent(p)
+		end
+		return false
+	end
+	g.sub = hl.on("window.open_early", function(w)
+		pcall(function()
+			if not w.xwayland then return end
+			local hide = w.class == "%s"
+			local title = w.title or ""
+			if not hide and os.time() <= g.until_t and (title == "" or title == "menu")
+					and w.pid ~= g.self and ours(w.pid) then
+				hide = true
+			end
+			if hide then
+				hl.dispatch(hl.dsp.window.move({ workspace = "special:dawkit", follow = false, window = w }))
+				hl.dispatch(hl.dsp.window.float({ action = "enable", window = w }))
+			end
+		end)
+	end)
+	g.version = %d
 end
-dawkit_menu_rule:set_enabled(true)
-dawkit_menu_rule_turn = (dawkit_menu_rule_turn or 0) + 1
-local turn = dawkit_menu_rule_turn
-hl.timer(function()
-	if dawkit_menu_rule_turn == turn then dawkit_menu_rule:set_enabled(false) end
-end, { timeout = 4000, type = "oneshot" })
+g.until_t = %s
+g.self = %ld
+g.roots = { %s }
 )lua";
+constexpr int GUARD_VERSION = 1;
+// How long the hook stays on unrenewed, and how often it is renewed while it is needed.
+constexpr int GUARD_SECONDS = 8;
+constexpr double GUARD_RENEW = 2.0;
 
-// When the rule was last renewed, in seconds.
-double hypr_renewed = -1e9;
+struct Guard {
+	std::mutex lock;
+	std::atomic<double> renewed{ -1e9 }; // when it was last renewed on, in seconds
+	std::atomic<bool> on{ false };
+	bool broken = false; // no hyprctl
+	std::vector<pid_t> running; // hyprctls not waited for
+	std::set<long> roots; // pids drawing in our windows, besides this process
+	std::atomic<int> loading{ 0 };
 
-// The rule on (again) for the next few seconds, at most once a second. Waits for it: the press it
-// comes before may open a menu.
-void keep_menus_hidden() {
-	if (!on_hyprland() || seconds() - hypr_renewed < 1.0) return;
-	hypr_renewed = seconds();
-	const char *argv[] = { "hyprctl", "eval", HYPR_MENU_RULE, nullptr };
-	posix_spawn_file_actions_t quiet;
-	posix_spawn_file_actions_init(&quiet);
-	posix_spawn_file_actions_addopen(&quiet, 1, "/dev/null", O_WRONLY, 0);
-	posix_spawn_file_actions_addopen(&quiet, 2, "/dev/null", O_WRONLY, 0);
-	pid_t pid;
-	if (posix_spawnp(&pid, "hyprctl", &quiet, nullptr, (char *const *)argv, environ) == 0) {
-		waitpid(pid, nullptr, 0);
-	} else {
-		hypr_renewed = 1e18; // no hyprctl: never again
+	static Guard &get() {
+		static Guard g;
+		return g;
 	}
-	posix_spawn_file_actions_destroy(&quiet);
+
+	// Renewed (or switched off), by `hyprctl eval`; waited for when `wait`, as before a window of
+	// ours maps, or the start of a load that may open one. Waited for, whether Hyprland took it.
+	bool renew(bool turn_on, bool wait) {
+		if (!on_hyprland()) return false;
+		std::lock_guard<std::mutex> hold(lock);
+		if (broken) return false;
+		bool took = !wait;
+		reap(false);
+		std::string list = "[" + std::to_string((long)getpid()) + "] = true";
+		for (long r : roots) list += ", [" + std::to_string(r) + "] = true";
+		std::string until = turn_on ? "os.time() + " + std::to_string(GUARD_SECONDS) : std::string("0");
+		std::vector<char> code(std::strlen(GUARD) + list.size() + 256);
+		std::snprintf(code.data(), code.size(), GUARD, GUARD_VERSION, CLASS, GUARD_VERSION, until.c_str(),
+				(long)getpid(), list.c_str());
+		const char *argv[] = { "hyprctl", "eval", code.data(), nullptr };
+		posix_spawn_file_actions_t quiet;
+		posix_spawn_file_actions_init(&quiet);
+		posix_spawn_file_actions_addopen(&quiet, 1, "/dev/null", O_WRONLY, 0);
+		posix_spawn_file_actions_addopen(&quiet, 2, "/dev/null", O_WRONLY, 0);
+		pid_t pid;
+		if (posix_spawnp(&pid, "hyprctl", &quiet, nullptr, (char *const *)argv, environ) == 0) {
+			if (wait) {
+				int status = 0;
+				waitpid(pid, &status, 0);
+				// hyprctl eval says so when the Lua failed (a Hyprland whose API has moved on).
+				took = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+			} else {
+				running.push_back(pid);
+			}
+			on = turn_on;
+			renewed = turn_on ? seconds() : -1e9;
+		} else {
+			broken = true;
+		}
+		posix_spawn_file_actions_destroy(&quiet);
+		return took;
+	}
+
+	// The hyprctls that have finished, let go (all of them, waiting, when `all`).
+	void reap(bool all) {
+		for (size_t i = 0; i < running.size();) {
+			if (waitpid(running[i], nullptr, all ? 0 : WNOHANG) != 0) {
+				running.erase(running.begin() + (long)i);
+			} else {
+				i++;
+			}
+		}
+	}
+
+	bool active() const { return on_hyprland() && seconds() - renewed.load() < GUARD_SECONDS - 1; }
+};
+
+// The guard on, now, if it has lapsed: the press it comes before may open a menu. While a window
+// is open `guard_desktop` keeps it renewed, so this waits for hyprctl only once it has gone quiet.
+void keep_menus_hidden() {
+	Guard &g = Guard::get();
+	if (!g.active()) g.renew(true, true);
 }
 
 // Wine takes the window the window manager last named active to be the one in front, and a plugin
@@ -310,9 +411,9 @@ struct Active {
 	}
 };
 
-// Whether menus that a window manager places are left where it puts them.
+// Whether menus that a window manager places are left where it puts them (out of sight).
 bool menus_stay_put() {
-	return on_hyprland() && hypr_renewed < 1e17 && seconds() - hypr_renewed < 4.0;
+	return Guard::get().active();
 }
 
 // How soon after a click a window opening is taken as the menu it opened.
@@ -321,7 +422,205 @@ constexpr double MENU_WITHIN = 2.0;
 // Off every screen, for as long as the compositor leaves it there.
 constexpr int HOLDER_X = -30000;
 
+// Ours, said so: the class the guard knows them by, this process, and nothing for a taskbar.
+void name_ours(Xlib &X, Window w) {
+	// WM_CLASS is the instance's name and the class's, each ended by a nul.
+	std::string both = std::string(CLASS) + '\0' + CLASS + '\0';
+	X.XChangeProperty(X.dpy, w, XA_WM_CLASS, XA_STRING, 8, PropModeReplace, (const unsigned char *)both.data(),
+			(int)both.size());
+	X.XChangeProperty(X.dpy, w, XA_WM_NAME, XA_STRING, 8, PropModeReplace, (const unsigned char *)"dawkit plugin window",
+			20);
+	long pid = (long)getpid();
+	X.XChangeProperty(X.dpy, w, X.XInternAtom(X.dpy, "_NET_WM_PID", False), XA_CARDINAL, 32, PropModeReplace,
+			(unsigned char *)&pid, 1);
+	Atom skip[2] = { X.XInternAtom(X.dpy, "_NET_WM_STATE_SKIP_TASKBAR", False),
+		X.XInternAtom(X.dpy, "_NET_WM_STATE_SKIP_PAGER", False) };
+	X.XChangeProperty(X.dpy, w, X.XInternAtom(X.dpy, "_NET_WM_STATE", False), XA_ATOM, 32, PropModeReplace,
+			(unsigned char *)skip, 2);
+}
+
+// The process `pid`'s parent, or 0.
+long parent_of(long pid) {
+	char path[64];
+	std::snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+	FILE *f = std::fopen(path, "r");
+	if (!f) return 0;
+	char buf[1024];
+	size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+	std::fclose(f);
+	buf[n] = 0;
+	// After the command's name, which may hold spaces and brackets of its own: the state, the parent.
+	const char *close = std::strrchr(buf, ')');
+	long ppid = 0;
+	char state;
+	if (!close || std::sscanf(close + 1, " %c %ld", &state, &ppid) != 2) return 0;
+	return ppid;
+}
+
+// Whether `pid` is a process this one started (or started by one it started), or one drawing in a
+// window of ours.
+bool one_of_ours(long pid) {
+	if (pid <= 0 || pid == (long)getpid()) return false;
+	const std::set<long> &roots = Guard::get().roots;
+	for (int i = 0; i < 40 && pid > 1; i++) {
+		if (pid == (long)getpid() || roots.count(pid)) return true;
+		pid = parent_of(pid);
+	}
+	return false;
+}
+
+// Window titles a plugin's processes put on the desktop and that were left there, to be said.
+std::vector<std::string> &left_on_desktop() {
+	static std::vector<std::string> all;
+	return all;
+}
+
+std::string title_of(Xlib &X, Window w) {
+	static Atom utf8 = X.XInternAtom(X.dpy, "UTF8_STRING", False);
+	static Atom net_name = X.XInternAtom(X.dpy, "_NET_WM_NAME", False);
+	std::string out;
+	for (Atom which : { net_name, (Atom)XA_WM_NAME }) {
+		Atom type;
+		int format;
+		unsigned long n, after;
+		unsigned char *data = nullptr;
+		if (X.XGetWindowProperty(X.dpy, w, which, 0, 256, False, which == net_name ? utf8 : (Atom)XA_STRING, &type,
+					&format, &n, &after, &data) == Success && data && format == 8 && n > 0) {
+			out.assign((const char *)data, n);
+		}
+		if (data) X.XFree(data);
+		if (!out.empty()) break;
+	}
+	return out;
+}
+
+// --- a display of their own ---------------------------------------------------------------------
+//
+// DAWKIT_PLUGIN_DISPLAY puts plugins' windows on an X display no one sees, where nothing of theirs
+// can reach anyone's desktop on any window manager: "xvfb" starts one (Xvfb, from
+// xorg-server-xvfb, ended with this process), ":99" (any display name) uses one already running.
+// Set before the first plugin is made, so its processes (yabridge's Wine host) start on it, and
+// after the game's own window is open, which stays where it is. Godot's later child processes
+// inherit it too: a program the game starts that only speaks X opens on that display, unseen.
+
+pid_t private_server = 0;
+
+std::string start_xvfb() {
+	for (int n = 90; n < 140; n++) {
+		char sock[64], lock[64];
+		std::snprintf(sock, sizeof sock, "/tmp/.X11-unix/X%d", n);
+		std::snprintf(lock, sizeof lock, "/tmp/.X%d-lock", n);
+		if (access(sock, F_OK) == 0 || access(lock, F_OK) == 0) continue;
+		std::string name = ":" + std::to_string(n);
+		pid_t pid = fork();
+		if (pid == 0) {
+			// Ended with the thread that started it, which is the main thread.
+			prctl(PR_SET_PDEATHSIG, SIGTERM);
+			int quiet = open("/dev/null", O_WRONLY);
+			dup2(quiet, 1);
+			dup2(quiet, 2);
+			execlp("Xvfb", "Xvfb", name.c_str(), "-nolisten", "tcp", "-screen", "0", "3840x2160x24", (char *)nullptr);
+			_exit(127);
+		}
+		if (pid < 0) return "";
+		for (int i = 0; i < 100; i++) {
+			if (access(sock, F_OK) == 0) {
+				private_server = pid;
+				return name;
+			}
+			int status = 0;
+			if (waitpid(pid, &status, WNOHANG) == pid) break; // gone: no Xvfb, or that display taken
+			usleep(30000);
+		}
+		kill(pid, SIGTERM);
+		waitpid(pid, nullptr, 0);
+		return "";
+	}
+	return "";
+}
+
 } // namespace
+
+void EditorWindow::prepare_display() {
+	static bool done = false;
+	if (done) return;
+	done = true;
+	const char *asked = getenv("DAWKIT_PLUGIN_DISPLAY");
+	if (!asked || !*asked) return;
+	std::string name = std::strcmp(asked, "xvfb") == 0 ? start_xvfb() : std::string(asked);
+	if (name.empty()) {
+		std::fprintf(stderr, "dawkit: DAWKIT_PLUGIN_DISPLAY=%s, but no display could be started (is Xvfb installed?); "
+				"plugins' windows stay on the desktop's\n", asked);
+		return;
+	}
+	setenv("DISPLAY", name.c_str(), 1);
+	private_display = true;
+}
+
+void EditorWindow::loading(bool on) {
+	Guard &g = Guard::get();
+	if (on) {
+		g.loading.fetch_add(1);
+		// Waited for, on the loading thread: a plugin may put a window up as it starts.
+		g.renew(true, true);
+	} else {
+		g.loading.fetch_sub(1);
+	}
+}
+
+// Every event on our connection: menus (and anything else) mapping on the root.
+static void drain(Xlib &X) {
+	while (X.XPending(X.dpy)) {
+		XEvent e;
+		X.XNextEvent(X.dpy, &e);
+		if (e.type == CreateNotify && e.xcreatewindow.parent == DefaultRootWindow(X.dpy)) {
+			auto &asked = asked_at();
+			double now = seconds();
+			for (auto it = asked.begin(); it != asked.end();) {
+				it = now - it->second.at > 10 ? asked.erase(it) : std::next(it);
+			}
+			asked[e.xcreatewindow.window] = { e.xcreatewindow.x, e.xcreatewindow.y, now };
+		} else if (e.type == MapNotify && e.xmap.event == DefaultRootWindow(X.dpy)) {
+			EditorWindow::window_mapped(e.xmap.window);
+			asked_at().erase(e.xmap.window);
+		}
+	}
+}
+
+void EditorWindow::guard_desktop(bool loading) {
+	Guard &g = Guard::get();
+	bool needed = loading || g.loading.load() > 0 || !open_editors().empty();
+	if (needed) {
+		Xlib &X = Xlib::get();
+		if (X.dpy) {
+			// Whoever draws in our windows: yabridge's Wine host, even one this process did not start
+			// (a plugin group's, shared with another program).
+			std::set<long> roots;
+			for (EditorWindow *e : open_editors()) {
+				if (e->holder) pids_in(X, (Window)e->holder, roots, 0);
+			}
+			roots.erase((long)getpid());
+			roots.erase(0);
+			// Never waited for: a loading thread may be renewing it (and waiting for hyprctl).
+			{
+				std::unique_lock<std::mutex> hold(g.lock, std::try_to_lock);
+				if (hold.owns_lock()) g.roots = roots;
+			}
+			drain(X);
+		}
+		if (seconds() - g.renewed.load() > GUARD_RENEW) g.renew(true, false);
+	} else if (g.on) {
+		g.renew(false, false);
+	}
+	std::unique_lock<std::mutex> hold(g.lock, std::try_to_lock);
+	if (hold.owns_lock()) g.reap(false);
+}
+
+std::vector<std::string> EditorWindow::take_left_on_desktop() {
+	std::vector<std::string> out;
+	out.swap(left_on_desktop());
+	return out;
+}
 
 bool EditorWindow::available(std::string *why) {
 	Xlib &X = Xlib::get();
@@ -342,15 +641,22 @@ bool EditorWindow::create(int w, int h, std::string &why) {
 	height = h > 0 ? h : 300;
 	XSetWindowAttributes at;
 	std::memset(&at, 0, sizeof at);
-	at.override_redirect = True;
+	// On Hyprland an ordinary window, which the guard puts out of sight as it opens (see
+	// on_hyprland) -- waited for: it must be there before the window opens, or the window opens
+	// on the desktop, tiled. Elsewhere, or when Hyprland would not take the guard, one no window
+	// manager touches, off every screen (which Hyprland shows at its corner, as before).
+	bool managed = on_hyprland() && Guard::get().renew(true, true);
+	at.override_redirect = managed ? False : True;
 	at.background_pixel = 0;
 	at.event_mask = SubstructureNotifyMask | StructureNotifyMask;
-	holder = X.XCreateWindow(X.dpy, DefaultRootWindow(X.dpy), HOLDER_X, 0, (unsigned)width, (unsigned)height, 0,
-			CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &at);
+	holder = X.XCreateWindow(X.dpy, DefaultRootWindow(X.dpy), managed ? 0 : HOLDER_X, 0, (unsigned)width,
+			(unsigned)height, 0, CopyFromParent, InputOutput, CopyFromParent,
+			CWOverrideRedirect | CWBackPixel | CWEventMask, &at);
 	if (!holder) {
 		why = "no window could be made for the plugin";
 		return false;
 	}
+	name_ours(X, (Window)holder);
 	X.XMapWindow(X.dpy, holder);
 	X.XSync(X.dpy, False);
 	open_editors().push_back(this);
@@ -408,21 +714,7 @@ uintptr_t EditorWindow::content() {
 void EditorWindow::pump() {
 	Xlib &X = Xlib::get();
 	if (!X.dpy) return;
-	while (X.XPending(X.dpy)) {
-		XEvent e;
-		X.XNextEvent(X.dpy, &e);
-		if (e.type == CreateNotify && e.xcreatewindow.parent == DefaultRootWindow(X.dpy)) {
-			auto &asked = asked_at();
-			double now = seconds();
-			for (auto it = asked.begin(); it != asked.end();) {
-				it = now - it->second.at > 10 ? asked.erase(it) : std::next(it);
-			}
-			asked[e.xcreatewindow.window] = { e.xcreatewindow.x, e.xcreatewindow.y, now };
-		} else if (e.type == MapNotify && e.xmap.event == DefaultRootWindow(X.dpy)) {
-			window_mapped(e.xmap.window);
-			asked_at().erase(e.xmap.window);
-		}
-	}
+	drain(X);
 	if (!holder) return;
 	tidy_popups();
 	if (!popups.empty() && open_popup()) {
@@ -584,7 +876,19 @@ void EditorWindow::window_mapped(uintptr_t w) {
 			from = e;
 		}
 	}
-	if (!from || is_a_window_of_its_own(X, (Window)w)) return;
+	if (is_a_window_of_its_own(X, (Window)w)) {
+		// A plugin's own window with a title of its own -- an activation, a licence, a file to open
+		// -- is left on the desktop to be answered there, and said in the game.
+		XWindowAttributes a;
+		std::string title = title_of(X, (Window)w);
+		if (Guard::get().active() && !title.empty() && title != "menu" && one_of_ours(pid_of(X, (Window)w)) &&
+				X.XGetWindowAttributes(X.dpy, (Window)w, &a) && !a.override_redirect) {
+			auto &left = left_on_desktop();
+			if (left.size() < 16) left.push_back(title);
+		}
+		return;
+	}
+	if (!from) return;
 	std::set<long> pids{ (long)getpid() };
 	pids_in(X, (Window)from->holder, pids, 0);
 	if (!pids.count(pid_of(X, (Window)w))) return;
@@ -635,7 +939,9 @@ bool EditorWindow::adopt(uintptr_t w) {
 	XSetWindowAttributes at;
 	std::memset(&at, 0, sizeof at);
 	at.override_redirect = True;
-	p.holder = X.XCreateWindow(X.dpy, root, ex + p.x, ey + p.y, (unsigned)p.width, (unsigned)p.height, 0,
+	int ox = 0, oy = 0;
+	Window parent = popup_parent(ox, oy);
+	p.holder = X.XCreateWindow(X.dpy, parent, ox + p.x, oy + p.y, (unsigned)p.width, (unsigned)p.height, 0,
 			CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect, &at);
 	if (!p.holder) return false;
 	X.XMapWindow(X.dpy, p.holder);
@@ -656,6 +962,18 @@ bool EditorWindow::adopt(uintptr_t w) {
 	popups.push_back(p);
 	entered = 0;
 	return true;
+}
+
+// Where a menu's window of ours goes, and the plugin's window's corner in it: on the root, over
+// where the plugin's window is on the screen; on Hyprland, inside our window for the plugin's
+// (which is out of sight), since a window on the root above everything would be on the desktop.
+uintptr_t EditorWindow::popup_parent(int &ox, int &oy) {
+	Xlib &X = Xlib::get();
+	Window child;
+	Window parent = on_hyprland() ? (Window)holder : DefaultRootWindow(X.dpy);
+	ox = oy = 0;
+	X.XTranslateCoordinates(X.dpy, target ? (Window)target : (Window)holder, parent, 0, 0, &ox, &oy, &child);
+	return parent;
 }
 
 // Menus closed and gone are let go; ones still open are kept the size they are, at 0, 0 of ours
@@ -694,10 +1012,9 @@ void EditorWindow::tidy_popups() {
 			p.height = a.height;
 			p.x = std::max(0, std::min(p.x, width - p.width));
 			p.y = std::max(0, std::min(p.y, height - p.height));
-			int ex = 0, ey = 0;
-			Window child;
-			X.XTranslateCoordinates(X.dpy, target ? target : holder, root, 0, 0, &ex, &ey, &child);
-			X.XMoveResizeWindow(X.dpy, (Window)p.holder, ex + p.x, ey + p.y, (unsigned)std::max(1, a.width),
+			int ox = 0, oy = 0;
+			popup_parent(ox, oy);
+			X.XMoveResizeWindow(X.dpy, (Window)p.holder, ox + p.x, oy + p.y, (unsigned)std::max(1, a.width),
 					(unsigned)std::max(1, a.height));
 			X.XMoveWindow(X.dpy, (Window)p.window, 0, 0);
 				}
@@ -712,6 +1029,8 @@ void EditorWindow::drop_popups() {
 	if (!X.dpy) return;
 	for (const Popup &p : popups) {
 		if (!p.holder) continue;
+		// Hyprland would show one still open at the desktop's corner (see on_hyprland).
+		if (on_hyprland()) X.XUnmapWindow(X.dpy, (Window)p.window);
 		X.XReparentWindow(X.dpy, (Window)p.window, DefaultRootWindow(X.dpy), HOLDER_X, 0);
 		X.XRemoveFromSaveSet(X.dpy, (Window)p.window);
 		X.XDestroyWindow(X.dpy, (Window)p.holder);

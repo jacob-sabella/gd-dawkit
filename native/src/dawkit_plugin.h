@@ -10,8 +10,10 @@
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace dawkit {
@@ -54,6 +56,28 @@ public:
 	// `info` as a scan gave it: format, id and path at least.
 	bool load(const Dictionary &info);
 	bool is_loaded() const { return plugin != nullptr; }
+	// Loads it on a thread of its own, set from `state` (if any) and active at `rate`: the main
+	// thread carries on meanwhile, and `is_loading` says when it is done (`is_loaded`, or
+	// `get_error` says why not). While it loads the plugin is not yet here -- nothing is run, pumped
+	// or shown -- but `info`, `is_instrument` and `get_state` answer as it was asked for, so a slot
+	// holding it can be named and saved. False when a load is already under way.
+	bool begin_load(const Dictionary &info, const PackedByteArray &state, double rate, int max_block);
+	// Whether it is still loading. From the main thread, which takes the plugin over once it is done.
+	bool is_loading();
+	// Waits for a load under way to end, on the main thread. Whether the plugin is loaded.
+	bool wait_loaded();
+	// Something that went wrong in a load that still loaded it (its saved state not taken), or "".
+	String get_warning() const { return warning; }
+	// Whether any plugin is loading now.
+	static bool loads_running();
+	// The titles of windows plugins' processes opened on the desktop and that were left there to be
+	// answered (an activation, a licence, a file to open), since last asked. Everything else a
+	// plugin puts up is kept off the desktop (see plugins/x11_editor.cpp).
+	static PackedStringArray take_desktop_windows();
+	// The parameters worth putting in front of someone, in the plugin's order: not hidden, not read
+	// only, automatable (or, for a plugin that marks none automatable, every one not hidden), at most
+	// `limit`. In C++ because a VST3 lists two thousand MIDI controller slots after its real controls.
+	PackedInt32Array shown_params(int limit) const;
 	Dictionary info() const;
 	String get_error() const { return problem; }
 	bool is_instrument() const;
@@ -94,9 +118,17 @@ public:
 
 	// --- its window ---------------------------------------------------------------------------
 	bool editor_supported();
+	// Opens it. A yabridge plugin's (HostedPlugin::is_bridged) is opened on a thread of its own --
+	// seconds, while yabridge's Wine host makes it -- and is open (`editor_is_open`) but
+	// `editor_opening` until that is done, with nothing to capture yet; one that then fails is
+	// closed again, with `get_error` saying why. Every other plugin's opens here, on the main thread,
+	// as its toolkit wants: it makes X windows of its own, on a connection of its own, which it then
+	// works from the thread it was made on (JUCE's and iPlug's take that thread for their message
+	// thread), and that must be the one that pumps it.
 	bool editor_open();
 	void editor_close();
 	bool editor_is_open() const;
+	bool editor_opening() const { return opening != nullptr; }
 	// Takes a new picture of the window: true when it changed since the last.
 	bool editor_capture();
 	Ref<Image> editor_image() const { return picture; }
@@ -121,6 +153,43 @@ protected:
 private:
 	void live(const dawkit::Event &e);
 	void main_thread();
+	void take_over_load();
+	struct Loading;
+	static void load_job(Loading *job, bool own_thread);
+
+	// A load on a thread of its own, and what it made. The thread writes `made`, `why` and `warning`
+	// and then `done`; the main thread reads them only once `done` is set.
+	struct Loading {
+		std::thread worker;
+		std::atomic<bool> done{ false };
+		std::atomic<bool> cancelled{ false }; // let go of before its turn came: never made
+		int owner = 0;
+		dawkit::PluginInfo asked;
+		std::vector<uint8_t> state;
+		double rate = 48000.0;
+		int max_block = 1024;
+		std::unique_ptr<dawkit::HostedPlugin> made;
+		std::string why;
+		std::string warning;
+	};
+	std::unique_ptr<Loading> loading;
+	String warning;
+
+	// The plugin's window being opened on a thread of its own. The thread writes `ok`, `width`,
+	// `height` and `why`, then `done`; the main thread reads them only once `done` is set, and keeps
+	// `cancelled` (closed before it was done) to itself.
+	struct Opening {
+		std::thread worker;
+		std::atomic<bool> done{ false };
+		bool cancelled = false;
+		int owner = 0;
+		bool ok = false;
+		int width = 0, height = 0;
+		std::string why;
+	};
+	std::unique_ptr<Opening> opening;
+	// Takes over an opening that is done (all of it, waiting, when `wait`). Whether one is still under way.
+	bool take_over_opening(bool wait);
 
 	std::unique_ptr<dawkit::HostedPlugin> plugin;
 	String problem;

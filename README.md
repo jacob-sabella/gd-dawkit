@@ -154,17 +154,48 @@ without them still loads the engine, with fewer plugins. Android builds with hos
   DAWproject keeps it in; CLAP's own stream; LV2 state as Turtle), live notes, latency, and its
   window. Call `DawKitPlugin.pump()` once a frame: plugins' timers, the work they ask for on the
   main thread, and their windows run from it.
+- **Loading.** `load` makes a plugin on the calling thread. `begin_load(info, state, rate,
+  max_block)` makes it on a thread of its own -- loaded, set from `state`, activated -- while the
+  main thread carries on (a Windows plugin through yabridge takes five seconds and more, as it
+  starts a Wine process); `is_loading()`, from the main thread, says when it is done and takes it
+  over (`is_loaded`, or `get_error`), `wait_loaded()` waits. One plugin is made at a time, whoever
+  asks. Until it is taken over the plugin is not pumped, run or shown, `info`, `is_instrument` and
+  `get_state` answer as it was asked for, its loading thread stands in for the main thread (CLAP's
+  thread check says so), and the timers and descriptors it asks the run loop for are held until it
+  is taken over. LV2 plugins are still made on the main thread inside `begin_load`: lilv's world is
+  shared by every LV2 plugin and read from the main thread by their windows and parameter words,
+  and is not made for two threads. `shown_params(limit)` lists the parameters worth showing (a
+  VST3 lists two thousand MIDI controller slots after its real ones).
+- **Opening a window off the main thread.** A Windows plugin through yabridge (its library says
+  `yabridge_version`; `HostedPlugin::is_bridged`) takes seconds to open its window, which
+  yabridge's Wine host makes, in its own process, on its own X connection. `editor_open` makes the
+  engine's window on the main thread (its X connection is the main thread's) and asks the plugin
+  for its window from a thread of its own, under the same lock as loading and standing in for the
+  main thread; `editor_is_open` is true and `editor_opening` says so until then, there is nothing
+  to capture, input is not sent, and the plugin's own main-thread work waits. A window closed
+  while it opens is closed once it has; one that would not open is closed, `get_error` saying
+  why. Every other plugin's window opens on the main thread: its toolkit makes X windows on a
+  connection of its own and works them from the thread that made them (JUCE and iPlug take it for
+  their message thread), which must be the one that pumps them.
 - **Effects.** A `DawKitPluginEffect` goes on a bus like any AudioEffect. Put on several buses that
   play the same lane (a track's, its sends', its cue's), it runs the plugin once a block, told apart
   by the transport's clock, and the other buses hear what it made.
 - **Instruments.** `DawKitLane.set_instrument(plugin)` and `set_notes(notes)` play a lane's notes
   through the plugin, each on its sample, through loops and jumps (whatever was sounding stops), and
   notes played live on the plugin sound through the lane whether the song plays or not.
-- **Windows.** A plugin's window is embedded in a window of the engine's, kept off every screen;
+- **Windows.** A plugin's window is embedded in a window of the engine's, kept out of sight;
   `editor_capture()` reads it into `editor_image()`, and `editor_pointer_*`, `editor_wheel` and
   `editor_key` send input into it, so a host shows the window wherever it likes (a texture in 3D,
   a panel) and nothing appears on the desktop. On Linux that is an X11 window, read with
-  XGetImage (a fully headless display, Xvfb, works too). On Windows it is a tool window read with
+  XGetImage, kept off every screen -- except on Hyprland, which keeps no X window off its screens
+  (one put at x = -30000 is shown at x = -1, in the desktop's corner): there it is an ordinary
+  window, class `dawkit-plugin-window`, that a hook the engine installs in Hyprland's Lua
+  (`hl.on("window.open_early")`, through `hyprctl eval`) puts on the special workspace `dawkit`,
+  floating and unfocused, as it opens. `DAWKIT_PLUGIN_DISPLAY=xvfb` instead starts a private Xvfb
+  (xorg-server-xvfb) for plugins' windows, ended with the process, and `DAWKIT_PLUGIN_DISPLAY=:N`
+  uses a display already running; either is set as `DISPLAY` before the first plugin loads (the
+  game's own window is open by then and stays where it is; programs the game starts later inherit
+  it). On Windows it is a tool window read with
   PrintWindow, and the mouse is posted to the plugin's window under the point. Because nothing
   is under the real cursor there, the engine:
   - holds back the mouse-leave Windows reports at once;
@@ -179,14 +210,18 @@ without them still loads the engine, with fewer plugins. Android builds with hos
   picture where it opened, and the pointer and keys go to it; a click outside it closes it.
   Override-redirect menus are moved into a window of the engine's, off every screen. A menu Wine
   draws (yabridge's plugins) is placed by the window manager and closes if it is moved or focused,
-  so on Hyprland, while a plugin's window is being clicked, the engine turns on a rule through
-  `hyprctl eval` that puts an `.exe`'s untitled window, or one titled "menu", on the special
-  workspace `dawkit`, unfocused. The rule switches itself off 4 seconds after the last click. A
-  Wine plugin also closes its menus when its window is not the active one, so from a click until
-  its menus close the engine names the plugin's window in `_NET_ACTIVE_WINDOW` (a thread of its
-  own names it again whenever the window manager changes it).
-  Other Wine programs' menus opened in that time go there too. Set `DAWKIT_NO_HYPRLAND_RULE` to
-  leave the window manager alone; such menus then appear wherever it puts them.
+  so on Hyprland, while a plugin loads and while any plugin's window is open, the same hook puts a
+  window that opens untitled or titled "menu", from a process the engine's started (yabridge's
+  Wine host) or one drawing in a window of the engine's, on `dawkit` too, and it is read and worked
+  there. A titled one (an activation, a licence, a file to open) is left on the desktop to be
+  answered, and `DawKitPlugin.take_desktop_windows()` names it so a host can say so. The hook is
+  renewed every 2 seconds while needed and goes quiet 8 seconds after it was last renewed, so
+  other programs' windows are never touched, and nothing stays hidden after a crash. A Wine plugin
+  also closes its menus when its window is not the active one, so from a click until its menus
+  close the engine names the plugin's window in `_NET_ACTIVE_WINDOW` (a thread of its own names
+  it again whenever the window manager changes it). Set `DAWKIT_NO_HYPRLAND_RULE` to leave the
+  window manager alone; the engine's windows are then off-screen ones again, and such menus appear
+  wherever it puts them.
 
 The tests use a CLAP built for them (`native/test_plugin`: a gain and a sine instrument).
 

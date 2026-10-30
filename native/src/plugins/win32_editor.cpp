@@ -173,6 +173,12 @@ WPARAM held_flags(unsigned int held) {
 
 } // namespace
 
+// A tool window off the desktop shows nowhere, and no window manager places one: nothing to do.
+void EditorWindow::prepare_display() {}
+void EditorWindow::loading(bool) {}
+void EditorWindow::guard_desktop(bool) {}
+std::vector<std::string> EditorWindow::take_left_on_desktop() { return {}; }
+
 bool EditorWindow::available(std::string *why) {
 	if (!registered()) {
 		if (why) *why = "no window class could be registered for plugin windows";

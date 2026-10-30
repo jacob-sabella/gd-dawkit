@@ -2,9 +2,12 @@ class_name DawKitTransportBar
 extends PanelContainer
 
 ## Along the top: back to the start, play, stop, record, loop and the click; where the song is,
-## in bars and in time; the tempo; undo and redo; and which view is showing.
+## in bars and in time; the tempo; the grid the arrangement's drags are pulled onto; undo and redo;
+## and which view is showing.
 
 signal view_asked(view: int)
+## A grid picked from GRID: one of DawKitArrange.GRIDS.
+signal grid_asked(grid: float)
 
 var host: DawKitHost
 var start_button: Button
@@ -19,6 +22,8 @@ var count_in: OptionButton
 var bars_label: Label
 var clock_label: Label
 var tempo: SpinBox
+## The arrangement's grid (DawKitArrange.GRIDS): the view's, not the song's, so it is not saved.
+var grid: OptionButton
 var undo_button: Button
 var redo_button: Button
 var view_buttons: Array[Button] = []
@@ -117,6 +122,16 @@ func _init(with_host: DawKitHost) -> void:
 	tempo.editable = host.can(DawKitHost.TEMPO)
 	tempo.value_changed.connect(func(v: float): host.set_tempo(v))
 	row.add_child(tempo)
+
+	grid = OptionButton.new()
+	grid.name = "Grid"
+	grid.focus_mode = Control.FOCUS_NONE
+	grid.tooltip_text = "What a drag in the arrangement snaps to, when it comes close to it (Alt: nothing)"
+	for text in DawKitArrange.GRID_NAMES:
+		grid.add_item(text)
+	grid.select(DawKitArrange.GRIDS.find(1.0))
+	grid.item_selected.connect(func(i: int): grid_asked.emit(DawKitArrange.GRIDS[i]))
+	row.add_child(grid)
 
 	row.add_child(_gap())
 	undo_button = _button("UNDO", "Undo (Ctrl+Z)", DawKitHost.UNDO)

@@ -479,6 +479,7 @@ struct Vst3Module {
 	IPluginFactory *factory = nullptr;
 	std::string path;
 	bool entered = false;
+	bool bridged = false; // yabridge's (it says its version), standing in for a Windows plugin
 	~Vst3Module() {
 		drop(factory);
 		if (entered) {
@@ -542,6 +543,8 @@ std::shared_ptr<Vst3Module> open_vst3(const std::string &path, std::string &prob
 	if (!m->lib.open(binary, problem)) {
 		return nullptr;
 	}
+	const char *(*bridge_version)() = nullptr;
+	m->bridged = m->lib.get("yabridge_version", bridge_version);
 #ifndef _WIN32
 	bool (*entry)(void *) = nullptr;
 	if (m->lib.get("ModuleEntry", entry)) {
@@ -617,6 +620,7 @@ PluginInfo info_of(const Vst3Module &m, IPluginFactory *f, int32 index, bool &is
 class Vst3Plugin final : public HostedPlugin {
 public:
 	explicit Vst3Plugin(std::shared_ptr<Vst3Module> m) : module(std::move(m)) {
+		bridged = module->bridged;
 		handler = new Handler();
 		handler->owner = this;
 		frame = new Frame();

@@ -5,7 +5,11 @@ extends Control
 ## header to the left of its lane, and the playhead.
 ##
 ## Click the ruler or an empty stretch of lane to put the playhead there. Drag a clip to move it,
-## to another track too; it snaps to the beat, and Alt lets it go anywhere. The wheel scrolls the
+## to another track too, or by an edge to trim it. A drag is pulled onto the grid (`grid`: bars,
+## beats or parts of one, or none) only when it comes within MAGNET pixels of a line, and is left
+## exactly where the pointer is otherwise; an audio clip's edge and its fades are pulled onto the
+## clip's own attacks the same way (DawKitHost.clip_transients), before any grid line, so it can be
+## trimmed to the hit. Alt lets any of it go anywhere. The wheel scrolls the
 ## tracks, Shift and the wheel scrolls the song, Ctrl and the wheel zooms about the pointer, and
 ## the middle button drags the view. Double-click a MIDI clip to edit its notes (clip_opened). While the song plays the view turns the page to keep the
 ## playhead in it.
@@ -17,7 +21,7 @@ signal clip_opened(id: String, index: int)
 
 ## The ruler (DawKitRuler.HEIGHT): markers and regions, the tempo's changes, and the bars.
 const RULER_HEIGHT := 56.0
-const HEADER_WIDTH := 210.0
+const HEADER_WIDTH := 270.0
 const LANE_HEIGHT := 62.0
 const MIN_LANE_HEIGHT := 30.0
 const MAX_LANE_HEIGHT := 200.0
@@ -34,6 +38,17 @@ const MIN_CLIP_SECONDS := 0.01
 ## An automation lane's height, under its track's clips; how near a point takes it.
 const AUTO_HEIGHT := 54.0
 const POINT := 6.0
+## How near, in pixels, a dragged time has to come to a grid line or an attack to be pulled onto
+## it. In pixels and not seconds, so it is as far to the hand zoomed in as zoomed out: zoomed in,
+## the pointer goes free between the lines; zoomed out until the lines are nearer than this, it
+## is on one at every step, as a grid always was.
+const MAGNET := 8.0
+## What a drag snaps to, in beats: BAR for the bar (whatever its signature), OFF for nothing. A
+## choice of the view's (the transport bar's GRID), as Reaper's grid is, and not part of the song.
+const BAR := -1.0
+const OFF := 0.0
+const GRIDS: Array[float] = [BAR, 1.0, 0.5, 0.25, 0.125, 0.0625, OFF]
+const GRID_NAMES: Array[String] = ["BAR", "BEAT", "1/2 BEAT", "1/4 BEAT", "1/8 BEAT", "1/16 BEAT", "NO GRID"]
 const CURSORS := {"trim_left": Control.CURSOR_HSIZE, "trim_right": Control.CURSOR_HSIZE,
 		"fade_in": Control.CURSOR_POINTING_HAND, "fade_out": Control.CURSOR_POINTING_HAND, "gain": Control.CURSOR_VSIZE}
 enum { MENU_SPLIT, MENU_DUPLICATE, MENU_DELETE, MENU_MUTE, MENU_GAIN, MENU_FADES }
@@ -58,6 +73,8 @@ var lanes_shown: Dictionary = {}
 var scroll_y := 0.0
 ## Whether the view turns the page to keep a playing song's playhead in sight.
 var follow := true
+## The grid drags are pulled onto: one of GRIDS.
+var grid := 1.0
 
 var headers: Dictionary = {}  # id -> Control
 var _order: Array[String] = []
@@ -282,12 +299,27 @@ func describe_at(at: Vector2) -> String:
 			also += "  muted"
 		if c.locked:
 			also += "  locked"
-		return "%s: %s, %s to %s (%.2f s), %s%s" % [t.name, c.name if not c.name.is_empty() else "clip %d" % (hit[1] + 1),
-				DawKitLook.bars_text(p, c.start), DawKitLook.bars_text(p, c.end()), c.length, what, also]
+		return "%s: %s, %s to %s (%.2f s), %s%s%s" % [t.name, c.name if not c.name.is_empty() else "clip %d" % (hit[1] + 1),
+				DawKitLook.bars_text(p, c.start), DawKitLook.bars_text(p, c.end()), c.length, what, also,
+				drag_hint(zone_at(at).get("zone", "move"), not c.source.is_empty())]
 	var row := row_at(at.y)
 	if row >= 0 and row < _order.size():
 		return "%s at %s" % [p.track(_order[row]).name, DawKitLook.bars_text(p, seconds)]
 	return ""
+
+
+## What dragging a clip's `zone` (see zone_at) does, for the status line: how it snaps, and that
+## Alt lets it go. An audio clip's edges and fades are pulled onto its attacks too.
+func drag_hint(zone: String, audio: bool) -> String:
+	var onto := "the grid and the clip's attacks" if audio else "the grid"
+	match zone:
+		"trim_left", "trim_right":
+			return "  (drag to trim: snaps to %s when close, Alt for free)" % onto
+		"fade_in", "fade_out":
+			return "  (drag the fade: snaps to %s when close, Alt for free)" % onto
+		"gain":
+			return "  (drag up or down for the clip's gain)"
+	return "  (drag to move: snaps to the grid when close, Alt for free)"
 
 
 ## The automation lane under a point: {id, target, top (of the lane), row}; empty off them.
@@ -327,13 +359,36 @@ func set_view(start: float, pps: float) -> void:
 	queue_redraw()
 
 
-## The nearest beat to `seconds`, on the project's own tempo map.
+## The grid line nearest `seconds`, on the project's own tempo map and meter; `seconds` itself
+## with no grid.
 func snap(seconds: float) -> float:
 	var p := host.project()
-	if p == null:
+	if p == null or grid == OFF:
 		return seconds
 	var map := p.tempo_map()
-	return map.seconds_at(roundf(map.beat_at(seconds)))
+	if grid == BAR:
+		var meter := p.meter()
+		return map.seconds_at(meter.beat_of_bar(roundf(meter.bar_at(map.beat_at(seconds)))))
+	return map.seconds_at(roundf(map.beat_at(seconds) / grid) * grid)
+
+
+## `seconds` pulled onto whatever is within MAGNET pixels of it: the nearest of `attacks` (song
+## seconds, earliest first, as DawKitHost.clip_transients gives them) first, as an attack is what
+## a trim is nearly always looking for, then the nearest grid line; and left as it is when
+## nothing is that near.
+func magnet(seconds: float, attacks := PackedFloat32Array()) -> float:
+	var reach := MAGNET / maxf(pixels_per_second, 0.0001)
+	var attack := DawKitTransients.nearest(attacks, seconds)
+	if not is_nan(attack) and absf(attack - seconds) <= reach:
+		return attack
+	var line := snap(seconds)
+	return line if absf(line - seconds) <= reach else seconds
+
+
+## The grid drags are pulled onto, one of GRIDS.
+func set_grid(g: float) -> void:
+	grid = g if GRIDS.has(g) else 1.0
+	queue_redraw()
 
 
 func _process(_delta: float) -> void:
@@ -776,16 +831,32 @@ func _on_motion(e: InputEventMouseMotion) -> void:
 		hovered.emit(describe_at(e.position))
 
 
-## The dragged clip's ghost, where the pointer has taken it. Times snap to the beat unless `free`.
+## The dragged clip's ghost, where the pointer has taken it. A time near a grid line is pulled
+## onto it, and an edge or a fade near one of the clip's attacks onto that, unless `free` (see
+## `magnet`).
 func _drag_to(at: Vector2, free: bool) -> void:
 	var c: DawKitClip = _drag["clip"]
 	var g: DawKitClip = _drag["ghost"]
 	var t := time_at(at.x)
-	var snapped := t if free else snap(t)
+	# The clip's attacks, asked for until there are some: the host finds them in the background,
+	# so the first moves of a drag may come before they are known.
+	var attacks: PackedFloat32Array = _drag.get("attacks", PackedFloat32Array())
+	if attacks.is_empty() and _drag["zone"] != "move" and not c.source.is_empty():
+		attacks = host.clip_transients(_drag["id"], _drag["index"])
+		_drag["attacks"] = attacks
+	var snapped := t if free else magnet(t, attacks)
+	# Where it was pulled to, for _draw_attacks to light: an edge's or a fade's, not a move's.
+	_drag["pulled"] = snapped if not is_equal_approx(snapped, t) and _drag["zone"] not in ["move", "gain"] else NAN
 	match _drag["zone"]:
 		"move":
 			var start := maxf(t - float(_drag["grab"]), 0.0)
-			g.start = start if free else maxf(snap(start), 0.0)
+			if not free:
+				# Its start onto a line near it, or else its end.
+				var pulled := magnet(start)
+				if is_equal_approx(pulled, start):
+					pulled = magnet(start + c.length) - c.length
+				start = maxf(pulled, 0.0)
+			g.start = start
 			_drag["to"] = _order[clampi(row_at(at.y), 0, _order.size() - 1)]
 		"trim_left":
 			var start := clampf(snapped, 0.0, c.end() - MIN_CLIP_SECONDS)
@@ -799,9 +870,9 @@ func _drag_to(at: Vector2, free: bool) -> void:
 			g.length = maxf(snapped, c.start + MIN_CLIP_SECONDS) - c.start
 			g.notes = _shifted_notes(c, 0.0, g.length)
 		"fade_in":
-			g.fade_in = clampf(t - c.start, 0.0, c.length - c.fade_out)
+			g.fade_in = clampf(snapped - c.start, 0.0, c.length - c.fade_out)
 		"fade_out":
-			g.fade_out = clampf(c.end() - t, 0.0, c.length - c.fade_in)
+			g.fade_out = clampf(c.end() - snapped, 0.0, c.length - c.fade_in)
 		"gain":
 			g.gain_db = clampf(c.gain_db - (at.y - float(_drag["y"])) * 0.25, -60.0, 24.0)
 
@@ -820,7 +891,7 @@ static func _shifted_notes(c: DawKitClip, shift: float, length: float) -> Packed
 
 func _seek_time(x: float, free: bool) -> float:
 	var at := maxf(time_at(maxf(x, HEADER_WIDTH)), 0.0)
-	return at if free else maxf(snap(at), 0.0)
+	return at if free else maxf(magnet(at), 0.0)
 
 
 func _clamp_scroll() -> void:
@@ -902,6 +973,16 @@ func _draw() -> void:
 					DawKitLook.SMALL_FONT_SIZE, DawKitLook.TEXT_DIM)
 		elif beat_px >= 10.0 and bar_every == 1:
 			draw_line(Vector2(x, RULER_HEIGHT * 0.75), Vector2(x, size.y), DawKitLook.LINE.darkened(0.45), 1.0)
+	# A grid finer than the beat, fainter still, where its lines are far enough apart to see.
+	if grid > 0.0 and grid < 1.0 and beat_px * grid >= 12.0:
+		var b := ceilf(map.beat_at(from) / grid) * grid
+		var last := map.beat_at(to)
+		while b <= last:
+			if not is_zero_approx(fposmod(b, 1.0)):
+				var x := x_of(map.seconds_at(b))
+				if x >= HEADER_WIDTH and x <= right:
+					draw_line(Vector2(x, RULER_HEIGHT), Vector2(x, size.y), DawKitLook.LINE.darkened(0.62), 1.0)
+			b += grid
 	# Clips.
 	for row in _order.size():
 		var top := lane_top(row)
@@ -916,6 +997,7 @@ func _draw() -> void:
 		var t := p.track(_drag["id"])
 		var g: DawKitClip = _drag["ghost"]
 		_draw_clip(t, _drag["index"], g, g.start, lane_top(_order.find(_drag["to"])), true)
+		_draw_attacks(lane_top(_order.find(_drag["to"])))
 		if _drag["zone"] == "gain":
 			_say_at(Vector2(x_of(g.start + g.length * 0.5), lane_top(_order.find(_drag["to"])) - 2.0), DawKitLook.db_text(g.gain_db) + " dB")
 		elif _drag["zone"] in ["fade_in", "fade_out"]:
@@ -1118,7 +1200,7 @@ func _press_lane(lane: Dictionary, e: InputEventMouseButton) -> void:
 	var i := point_at(t, target, lane["top"], e.position)
 	var added := i < 0
 	if added:
-		var at := maxf(time_at(e.position.x) if e.alt_pressed else snap(time_at(e.position.x)), 0.0)
+		var at := maxf(time_at(e.position.x) if e.alt_pressed else magnet(time_at(e.position.x)), 0.0)
 		var shape := DawKitAutomation.HOLD if DawKitEnvelope.is_switch(target) else DawKitAutomation.LINEAR
 		points.append([at, DawKitAutomation.clamp_value(target, DawKitEnvelope.value_of(target, lane_level(lane["top"], e.position.y))), shape])
 		points.sort_custom(func(a, b): return a[0] < b[0])
@@ -1138,7 +1220,7 @@ func _drag_lane(at: Vector2, free: bool) -> void:
 	var target: String = _auto["target"]
 	var lo: float = points[i - 1][0] + 0.001 if i > 0 else 0.0
 	var hi: float = points[i + 1][0] - 0.001 if i + 1 < points.size() else INF
-	var t := time_at(at.x) if free else snap(time_at(at.x))
+	var t := time_at(at.x) if free else magnet(time_at(at.x))
 	points[i][0] = clampf(t, lo, maxf(hi, lo))
 	points[i][1] = DawKitAutomation.clamp_value(target, DawKitEnvelope.value_of(target, lane_level(_auto["top"], at.y)))
 	_auto["moved"] = true
@@ -1209,6 +1291,30 @@ func _draw_clip(t: DawKitTrack, index: int, c: DawKitClip, start: float, top: fl
 		var gain := DawKitLook.db_text(c.gain_db) + " dB"
 		draw_string(font, Vector2(rect.end.x - 50.0, rect.position.y + 11.0), gain, HORIZONTAL_ALIGNMENT_RIGHT, 46,
 				DawKitLook.SMALL_FONT_SIZE - 1, text_colour)
+
+
+## The dragged clip's attacks, faint ticks over it (they are what its edges and fades are pulled
+## onto), and a bright line where the drag has been pulled to, attack or grid line.
+func _draw_attacks(top: float) -> void:
+	var g: DawKitClip = _drag["ghost"]
+	var attacks: PackedFloat32Array = _drag.get("attacks", PackedFloat32Array())
+	var y0 := top + 3.0 + BAND
+	var y1 := top + lane_height - 4.0
+	var x0 := maxf(x_of(g.start), HEADER_WIDTH)
+	var x1 := minf(x_of(g.end()), size.x)
+	var tick := Color(DawKitLook.TEXT, 0.22)
+	var drawn := -INF
+	for a in attacks:
+		var x := x_of(a)
+		if x < x0 or x > x1 or x - drawn < 2.0:
+			continue
+		draw_line(Vector2(x, y0), Vector2(x, y1), tick, 1.0)
+		drawn = x
+	var pulled: float = _drag.get("pulled", NAN)
+	if not is_nan(pulled):
+		var x := x_of(pulled)
+		if x >= HEADER_WIDTH and x <= size.x:
+			draw_line(Vector2(x, top), Vector2(x, top + lane_height), Color(DawKitLook.PLAYHEAD, 0.8), 1.0)
 
 
 ## A clip's fades: the part of it a fade takes shaded above the fade's curve, and a handle at each

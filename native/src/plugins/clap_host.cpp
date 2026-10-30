@@ -28,6 +28,7 @@ struct ClapModule {
 	Library lib;
 	const clap_plugin_entry_t *entry = nullptr;
 	std::string path;
+	bool bridged = false; // yabridge's (it says its version), standing in for a Windows plugin
 	~ClapModule() {
 		if (entry) {
 			entry->deinit();
@@ -53,6 +54,8 @@ std::shared_ptr<ClapModule> open_module(const std::string &path, std::string &pr
 	if (!m->lib.open(path, problem)) {
 		return nullptr;
 	}
+	const char *(*bridge_version)() = nullptr;
+	m->bridged = m->lib.get("yabridge_version", bridge_version);
 	const clap_plugin_entry_t *entry = nullptr;
 	if (!m->lib.get("clap_entry", entry)) {
 		problem = path + " has no clap_entry";
@@ -110,6 +113,7 @@ union AnyEvent {
 class ClapPlugin final : public HostedPlugin {
 public:
 	ClapPlugin(std::shared_ptr<ClapModule> mod) : module(std::move(mod)) {
+		bridged = module->bridged;
 		host.clap_version = CLAP_VERSION;
 		host.host_data = this;
 		host.name = "dawkit";

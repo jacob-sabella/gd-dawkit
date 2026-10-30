@@ -72,6 +72,8 @@ const EDIT_CLIPS := &"edit_clips"
 ## it (MONITOR): off, on, or auto -- heard while it is armed and the song is stopped or recording.
 const INPUTS := &"inputs"
 const MONITOR := &"monitor"
+## Set a track's input aside (DawKitTrack.input_off): not heard, not recorded, its choice kept.
+const INPUT_OFF := &"input_off"
 
 
 ## The project as it is now. The interface reads it and never writes to it.
@@ -107,6 +109,16 @@ func meter(_id: String) -> Vector2:
 ## without a wave.
 func clip_peaks(_id: String, _clip_index: int) -> PackedByteArray:
 	return PackedByteArray()
+
+
+## Where an audio clip's attacks are heard, in song seconds, earliest first (DawKitTransients):
+## what a trimmed edge or a dragged fade is pulled onto when it comes near one. Every attack in
+## the clip's file as the clip places it, not only those between its edges, so an edge dragged
+## outward finds the ones it uncovers. Found from the file in the background (DawKitTransients.soon),
+## so empty until they have been, as it is for MIDI, for a file the host does not have, and for a
+## host that does not look.
+func clip_transients(_id: String, _clip_index: int) -> PackedFloat32Array:
+	return PackedFloat32Array()
 
 
 ## A one-line name for what the project would undo, or "" for nothing to undo.
@@ -146,6 +158,11 @@ func set_input(_id: String, _input: String) -> void:
 
 ## A track's monitoring, a DawKitTrack.Monitor.
 func set_monitor(_id: String, _mode: int) -> void:
+	pass
+
+
+## A track's input set aside, or taken back (INPUT_OFF).
+func set_input_off(_id: String, _off: bool) -> void:
 	pass
 
 

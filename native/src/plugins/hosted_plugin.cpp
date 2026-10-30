@@ -18,6 +18,8 @@ namespace dawkit {
 
 static std::thread::id main_id;
 static bool main_known = false;
+// The load this thread stands in for the main thread for, or 0.
+static thread_local int standing_in = 0;
 
 void set_main_thread() {
 	main_id = std::this_thread::get_id();
@@ -25,7 +27,20 @@ void set_main_thread() {
 }
 
 bool on_main_thread() {
-	return !main_known || std::this_thread::get_id() == main_id;
+	return standing_in != 0 || !main_known || std::this_thread::get_id() == main_id;
+}
+
+void stand_in_for_main(int owner) {
+	standing_in = owner;
+}
+
+int loading_owner() {
+	return standing_in;
+}
+
+std::mutex &load_lock() {
+	static std::mutex m;
+	return m;
 }
 
 double now_seconds() {
@@ -41,19 +56,24 @@ RunLoop &RunLoop::get() {
 }
 
 int RunLoop::add_fd(int fd, Callback on_ready) {
+	std::lock_guard<std::recursive_mutex> hold(lock);
 	Entry e{ next_id++, fd, 0, 0.0, std::move(on_ready) };
+	e.owner = loading_owner();
 	entries.push_back(std::move(e));
 	return entries.back().id;
 }
 
 int RunLoop::add_timer(int period_ms, Callback on_tick) {
+	std::lock_guard<std::recursive_mutex> hold(lock);
 	period_ms = std::max(period_ms, 1);
 	Entry e{ next_id++, -1, period_ms, now_seconds() + period_ms / 1000.0, std::move(on_tick) };
+	e.owner = loading_owner();
 	entries.push_back(std::move(e));
 	return entries.back().id;
 }
 
 void RunLoop::remove(int id) {
+	std::lock_guard<std::recursive_mutex> hold(lock);
 	for (Entry &e : entries) {
 		if (e.id == id) {
 			e.gone = true;
@@ -65,24 +85,52 @@ void RunLoop::remove(int id) {
 	}
 }
 
-void RunLoop::pump() {
-	if (pumping || entries.empty()) {
+void RunLoop::release(int owner) {
+	if (owner == 0) {
 		return;
 	}
-	pumping = true;
-	double now = now_seconds();
-	// Copied out first: a callback may add or remove entries, which would move the vector.
+	std::lock_guard<std::recursive_mutex> hold(lock);
+	for (Entry &e : entries) {
+		if (e.owner == owner) {
+			e.owner = 0;
+		}
+	}
+}
+
+void RunLoop::pump() {
+	// Copied out first, under the lock: a callback may add or remove entries (which would move the
+	// vector), and a loading thread may add its own meanwhile. Called back with the lock let go.
 	std::vector<std::pair<int, Callback>> due;
 #ifndef _WIN32
 	std::vector<pollfd> fds;
 	std::vector<int> fd_ids;
-	for (const Entry &e : entries) {
-		if (!e.gone && e.fd >= 0) {
-			fds.push_back(pollfd{ e.fd, POLLIN, 0 });
-			fd_ids.push_back(e.id);
+#endif
+	{
+		std::lock_guard<std::recursive_mutex> hold(lock);
+		if (pumping || entries.empty()) {
+			return;
+		}
+		pumping = true;
+		double now = now_seconds();
+#ifndef _WIN32
+		for (const Entry &e : entries) {
+			if (!e.gone && e.fd >= 0 && e.owner == 0) {
+				fds.push_back(pollfd{ e.fd, POLLIN, 0 });
+				fd_ids.push_back(e.id);
+			}
+		}
+#endif
+		for (Entry &e : entries) {
+			if (!e.gone && e.fd < 0 && e.owner == 0 && now >= e.due) {
+				// Not caught up tick by tick after a long frame: once, and on from now.
+				e.due = now + e.period_ms / 1000.0;
+				due.push_back({ e.id, e.call });
+			}
 		}
 	}
+#ifndef _WIN32
 	if (!fds.empty() && poll(fds.data(), fds.size(), 0) > 0) {
+		std::lock_guard<std::recursive_mutex> hold(lock);
 		for (size_t i = 0; i < fds.size(); i++) {
 			if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
 				for (const Entry &e : entries) {
@@ -94,22 +142,19 @@ void RunLoop::pump() {
 		}
 	}
 #endif
-	for (Entry &e : entries) {
-		if (!e.gone && e.fd < 0 && now >= e.due) {
-			// Not caught up tick by tick after a long frame: once, and on from now.
-			e.due = now + e.period_ms / 1000.0;
-			due.push_back({ e.id, e.call });
-		}
-	}
 	for (auto &d : due) {
 		bool still = false;
-		for (const Entry &e : entries) {
-			still = still || (e.id == d.first && !e.gone);
+		{
+			std::lock_guard<std::recursive_mutex> hold(lock);
+			for (const Entry &e : entries) {
+				still = still || (e.id == d.first && !e.gone);
+			}
 		}
 		if (still) {
 			d.second();
 		}
 	}
+	std::lock_guard<std::recursive_mutex> hold(lock);
 	pumping = false;
 	entries.erase(std::remove_if(entries.begin(), entries.end(), [](const Entry &e) { return e.gone; }),
 			entries.end());

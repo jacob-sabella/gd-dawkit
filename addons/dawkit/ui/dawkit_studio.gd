@@ -101,6 +101,8 @@ func _init(with_host: DawKitHost) -> void:
 	piano_roll = DawKitPianoRoll.new(host)
 	top.add_child(piano_roll)
 	arrange.clip_opened.connect(open_clip)
+	transport.grid_asked.connect(arrange.set_grid)
+	transport.grid.select(DawKitArrange.GRIDS.find(arrange.grid))
 	piano_roll.closed.connect(func():
 		arrange.visible = true
 		if _view_before_notes >= 0:

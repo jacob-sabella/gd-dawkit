@@ -3,7 +3,8 @@
 // A plugin's own window, kept where no one sees it and shown as a picture instead.
 //
 // The plugin is given a window of ours to put its window in (CLAP's, VST3's and LV2's way of
-// embedding one), far off every screen, so nothing appears on the desktop. The picture is read
+// embedding one), out of sight -- far off every screen, or on Hyprland (which keeps no window off
+// its screens) on a special workspace nobody looks at -- so nothing appears on the desktop. The picture is read
 // back from it, and the pointer is sent into it, never faked, so nothing else on the desktop is
 // ever clicked by mistake. One implementation a system:
 //
@@ -21,6 +22,19 @@ class EditorWindow {
 public:
 	// Whether plugin windows can be kept here (on Linux, whether there is an X display).
 	static bool available(std::string *why = nullptr);
+
+	// --- the desktop, kept clear of plugins' windows --------------------------------------------
+	// Before a plugin is first made: the X display plugins' windows go on, when one of their own is
+	// asked for (DAWKIT_PLUGIN_DISPLAY; see x11_editor.cpp). From the main thread.
+	static void prepare_display();
+	// A plugin is being made (or is no longer), on whichever thread makes it.
+	static void loading(bool on);
+	// Once a frame, from the main thread: while a plugin loads or any plugin's window is open, a
+	// window one of the plugins' processes puts on the desktop is taken off it (see x11_editor.cpp).
+	static void guard_desktop(bool loading);
+	// The titles of windows a plugin's processes opened on the desktop, left there to be answered
+	// (an activation, a file to open), since last asked.
+	static std::vector<std::string> take_left_on_desktop();
 
 	EditorWindow() = default;
 	EditorWindow(const EditorWindow &) = delete;
@@ -85,9 +99,15 @@ private:
 	int pointer_x = -1, pointer_y = -1; // where the pointer last was in the picture
 	double last_motion = 0; // and when it was last sent there
 	bool nudged = false; // the pointer is a pixel to the right of where it was put, to keep it moving
-	static void window_mapped(uintptr_t w);
 	bool adopt(uintptr_t w);
+
+public:
+	// A window on the root mapped: a menu of one of ours, taken in; a stray of a plugin's noted.
+	static void window_mapped(uintptr_t w);
+
+private:
 	void tidy_popups();
+	uintptr_t popup_parent(int &ox, int &oy);
 	void drop_popups();
 	const Popup *open_popup_at(int x, int y) const;
 	const Popup *open_popup() const;

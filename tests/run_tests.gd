@@ -53,6 +53,7 @@ func _run() -> void:
 	_test_plugins_are_found_and_described()
 	_test_a_plugin_effect_changes_the_sound()
 	_test_a_plugins_state_comes_back()
+	_test_a_plugin_loads_on_a_thread_of_its_own()
 	_test_an_instrument_plugin_plays_live_notes()
 	_test_a_lane_plays_its_notes_through_its_instrument()
 	_test_a_plugin_effect_runs_once_for_every_bus_it_is_on()
@@ -63,6 +64,8 @@ func _run() -> void:
 	_test_the_project_host_undoes_each_edit()
 	_test_the_project_host_edits_the_selection()
 	_test_the_2d_arrange_edits_clips_by_their_handles()
+	_test_attacks_are_found_to_the_millisecond()
+	_test_the_2d_arrange_snaps_only_when_close()
 	_test_a_project_moves_its_tracks_and_folders()
 	_test_the_2d_arrange_edits_tracks()
 	_test_the_2d_mixer_has_effects_and_sends()
@@ -1460,6 +1463,47 @@ func _test_a_plugins_state_comes_back() -> void:
 	close("and sounds it", b.process(dc)[599].x, 0.75, 0.001)
 
 
+## A heavy plugin (a Windows one through yabridge) takes seconds to make; `begin_load` makes it on
+## a thread of its own, set and active, while the main thread carries on, and answers for it --
+## its name, the state it is being given -- until it is taken over.
+func _test_a_plugin_loads_on_a_thread_of_its_own() -> void:
+	if _test_plugin() == "":
+		return
+	var a = _loaded("dawkit.test.gain")
+	if a == null:
+		return
+	a.set_param(0, 0.75)
+	var dc := PackedVector2Array()
+	dc.resize(600)
+	dc.fill(Vector2(0.5, 0.5))
+	a.process(dc)
+	var state: PackedByteArray = a.get_state()
+	var p = ClassDB.instantiate(&"DawKitPlugin")
+	var asked := {"format": "CLAP", "id": "dawkit.test.gain", "name": "Test Gain", "path": _test_plugin()}
+	check("a load starts at once", p.begin_load(asked, state, 48000.0, 512))
+	check("and a second is refused while it runs", not p.begin_load(asked, state, 48000.0, 512))
+	check("meanwhile it names itself as asked and gives the state it is being given",
+			not p.is_loaded() and p.info().get("name", "") == "Test Gain" and p.get_state() == state)
+	var until := Time.get_ticks_msec() + 5000
+	while p.is_loading() and Time.get_ticks_msec() < until:
+		OS.delay_msec(2)
+	check("then it is loaded, active, set from the state (%s)" % p.get_error(), p.is_loaded() and p.is_active()
+			and not ClassDB.class_call_static(&"DawKitPlugin", &"loads_running"))
+	close("with the value it was saved with", p.get_param(0), 0.75, 0.0001)
+	close("and sounds it", p.process(dc)[599].x, 0.75, 0.001)
+	check("its parameters worth showing are its one knob", p.shown_params(512) == PackedInt32Array([0]))
+	check("and, not a yabridge plugin, it is never left opening a window on another thread",
+			not p.editor_opening())
+	var bad = ClassDB.instantiate(&"DawKitPlugin")
+	bad.begin_load({"format": "CLAP", "id": "no.such", "path": _test_plugin()})
+	check("one that will not load says so once it is done", not bad.wait_loaded() and bad.get_error() != "")
+	# Let go of mid-load: waited for, not left writing into nothing.
+	var gone = ClassDB.instantiate(&"DawKitPlugin")
+	gone.begin_load(asked, state, 48000.0, 512)
+	gone = null
+	check("one let go of while it loads goes quietly", not ClassDB.class_call_static(&"DawKitPlugin", &"loads_running"))
+
+
 func _test_an_instrument_plugin_plays_live_notes() -> void:
 	if _test_plugin() == "":
 		return
@@ -1988,6 +2032,170 @@ func _test_the_2d_arrange_edits_clips_by_their_handles() -> void:
 	a.open_clip_menu("t1", 0, Vector2(100, 100))
 	a._on_menu(DawKitArrange.MENU_MUTE)
 	check("the clip menu mutes a clip", host.project().track("t1").clips[0].muted)
+	s.free()
+
+
+## A mono sound `seconds` long at `rate` with a hiss under it and, from each [time, kind, level]
+## of `hits`, a sound starting on exactly that sample: "click" a lone sample and a 10 ms burst
+## after it, "tone" a 220 Hz note dying away over half a second, "bass" an 80 Hz note held to
+## the end, "hat" a 40 ms burst of noise.
+static func _hits(rate: int, seconds: float, hits: Array) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(int(rate * seconds))
+	var noise := RandomNumberGenerator.new()
+	noise.seed = 7
+	for f in out.size():
+		out[f] = noise.randf_range(-0.001, 0.001)
+	for hit in hits:
+		var from := int(round(float(hit[0]) * rate))
+		var level: float = hit[2]
+		for f in range(from, out.size()):
+			var t := float(f - from) / rate
+			var v := 0.0
+			match hit[1]:
+				"click":
+					if t > 0.01:
+						break
+					v = level if f == from else noise.randf_range(-1.0, 1.0) * level * 0.5 * exp(-t * 400.0)
+				"tone":
+					if t > 0.6:
+						break
+					v = level * sin(TAU * 220.0 * t) * exp(-t * 6.0)
+				"bass":
+					v = level * sin(TAU * 80.0 * t)
+				"hat":
+					if t > 0.04:
+						break
+					v = noise.randf_range(-1.0, 1.0) * level * exp(-t * 80.0)
+			out[f] += v
+	return out
+
+
+func _test_attacks_are_found_to_the_millisecond() -> void:
+	var rate := 48000
+	var hits := [[0.25, "click", 0.9], [0.6137, "tone", 0.5], [1.3, "bass", 0.4], [1.5049, "hat", 0.5],
+			[1.80021, "click", 0.7]]
+	var sound := _hits(rate, 2.2, hits)
+	var found := DawKitTransients.find(sound, 1, rate)
+	var worst := 0.0
+	for hit in hits:
+		worst = maxf(worst, absf(DawKitTransients.nearest(found, hit[0]) - float(hit[0])))
+	check("every attack is found, a click, a note, a bass note, a hi-hat over it and a click (%s)" % [found],
+			found.size() == hits.size())
+	check("each where it starts, to the millisecond (worst %.5f s)" % worst, worst <= 0.001)
+	check("earliest first", found.size() < 2 or found[0] < found[1])
+	var quiet := _hits(rate, 1.0, [])
+	check("hiss alone has none (%s)" % [DawKitTransients.find(quiet, 1, rate)], DawKitTransients.find(quiet, 1, rate).is_empty())
+	var steady := _hits(rate, 1.5, [[0.1, "bass", 0.4]])
+	check("a held note is one attack, not one a cycle (%s)" % [DawKitTransients.find(steady, 1, rate)],
+			DawKitTransients.find(steady, 1, rate).size() == 1)
+	var stereo := PackedFloat32Array()
+	for v in sound:
+		stereo.append_array([v, v * 0.5])
+	var both := DawKitTransients.find(stereo, 2, rate)
+	check("stereo is heard as one sound (%d)" % both.size(), both.size() == hits.size()
+			and absf(both[1] - 0.6137) <= 0.001)
+
+	var path := _write("hits.wav", _wav(sound, 1, rate, 32, true, false))
+	DawKitTransients.forget()
+	check("a file's attacks are not known at once, but are being looked for", DawKitTransients.soon(path).is_empty())
+	DawKitTransients.settle()
+	var soon := DawKitTransients.soon(path)
+	check("and are known once they have been (%d)" % soon.size(), soon.size() == hits.size())
+	check("as of_file finds them", DawKitTransients.of_file(path) == soon)
+	var backwards := DawKitTransients.of_file(path, true)
+	check("played backwards, it has the backward sound's own (%s)" % [backwards], backwards != soon and not backwards.is_empty())
+	check("a file that is not there has none", DawKitTransients.soon(_tmp("nothing.wav")).is_empty())
+
+	var placed := DawKitTransients.placed(PackedFloat32Array([0.25, 0.75]), 10.0, 0.5, 1.0)
+	check("a clip's are where its file puts them in the song, past its edges too (%s)" % [placed],
+			placed.size() == 2 and is_equal_approx(placed[0], 9.75) and is_equal_approx(placed[1], 10.25))
+	var looped := DawKitTransients.placed(PackedFloat32Array([0.1, 0.6]), 0.0, 0.0, 2.0, 0.0, 1.0, 0.0)
+	check("a looped clip's come round with each pass (%s)" % [looped], looped.size() == 4
+			and is_equal_approx(looped[2], 1.1) and is_equal_approx(looped[3], 1.6))
+	check("the nearest is found", is_equal_approx(DawKitTransients.nearest(PackedFloat32Array([1.0, 2.0, 3.0]), 2.4), 2.0)
+			and is_nan(DawKitTransients.nearest(PackedFloat32Array(), 1.0)))
+
+	var host := DawKitProjectHost.new(_band())
+	var clip := host.project().track("t1").clips[0]
+	clip.source = path
+	clip.source_offset = 0.5
+	var heard := host.clip_transients("t1", 0)
+	check("the project host says a clip's, in song seconds (%s)" % [heard], heard.size() == hits.size()
+			and absf(heard[1] - (2.0 - 0.5 + 0.6137)) <= 0.001)
+	check("and none for a MIDI clip", host.clip_transients("t3", 0).is_empty())
+
+
+func _test_the_2d_arrange_snaps_only_when_close() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 100.0)
+	# 120 bpm: a beat is half a second, fifty pixels; MAGNET pixels is 0.08 s.
+	check("near a beat, a time is pulled onto it", is_equal_approx(a.magnet(2.06), 2.0))
+	check("between beats, it stays where it is", is_equal_approx(a.magnet(2.2), 2.2))
+	check("an attack near it pulls before the grid does", is_equal_approx(a.magnet(2.06, PackedFloat32Array([2.1])), 2.1))
+	check("but not one too far", is_equal_approx(a.magnet(2.2, PackedFloat32Array([2.4])), 2.2))
+	a.set_view(0.0, 5.0)
+	check("zoomed out, the same pixels are further: on a beat at every step", is_equal_approx(a.magnet(2.2), 2.0))
+	a.set_view(0.0, 100.0)
+	a.set_grid(0.25)
+	check("a finer grid has more lines to be pulled onto", is_equal_approx(a.magnet(2.2), 2.25)
+			and is_equal_approx(a.snap(2.2), 2.25))
+	a.set_grid(DawKitArrange.BAR)
+	check("the bar's grid pulls onto bars only", is_equal_approx(a.magnet(2.04), 2.0) and is_equal_approx(a.magnet(1.5), 1.5)
+			and is_equal_approx(a.snap(1.2), 2.0))
+	a.set_grid(DawKitArrange.OFF)
+	check("and with no grid, nothing does", is_equal_approx(a.magnet(2.02), 2.02))
+	check("the transport bar offers the grids", s.transport.grid.item_count == DawKitArrange.GRIDS.size())
+	s.transport.grid.select(DawKitArrange.GRIDS.find(0.5))
+	s.transport.grid.item_selected.emit(DawKitArrange.GRIDS.find(0.5))
+	check("and picking one sets the arrangement's", a.grid == 0.5)
+	check("which is the view's, not the song's", not host.project().to_dict().has("grid"))
+	a.set_grid(1.0)
+
+	# The drum loop runs 2 s to 6 s; trim its end near a beat, then between beats.
+	var body := a.lane_top(0) + 40.0
+	var loop := host.project().track("t1").clips[0]
+	_mouse(a, Vector2(a.x_of(6.0) - 2.0, body), Vector2(a.x_of(5.05), body))
+	check("an edge let go near a beat lands on it (%.3f)" % loop.end(), is_equal_approx(loop.end(), 5.0))
+	_mouse(a, Vector2(a.x_of(5.0) - 2.0, body), Vector2(a.x_of(4.3), body))
+	check("and let go between beats, exactly where it was let go (%.3f)" % loop.end(), absf(loop.end() - 4.3) < 0.011)
+	var alt := InputEventMouseMotion.new()
+	_mouse(a, Vector2(a.x_of(4.3) - 2.0, body), Vector2(a.x_of(4.02), body))
+	check("near a beat it is pulled on", is_equal_approx(loop.end(), 4.0))
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = Vector2(a.x_of(4.0) - 2.0, body)
+	a._gui_input(down)
+	alt.position = Vector2(a.x_of(4.53), body)
+	alt.alt_pressed = true
+	a._gui_input(alt)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.position = alt.position
+	a._gui_input(up)
+	check("with Alt, not even near one (%.3f)" % loop.end(), absf(loop.end() - 4.53) < 0.011)
+
+	# An audio clip's edges are pulled onto its own attacks.
+	var path := _write("snap_hits.wav", _wav(_hits(48000, 4.0, [[0.7, "click", 0.9], [1.23, "click", 0.9]]), 1, 48000, 32, true, false))
+	loop.source = path
+	loop.source_offset = 0.0
+	DawKitTransients.of_file(path)
+	_mouse(a, Vector2(a.x_of(2.0) + 2.0, body), Vector2(a.x_of(2.69), body))
+	check("the left edge near an attack lands on it (%.4f)" % loop.start, absf(loop.start - 2.7) <= 0.001
+			and absf(loop.source_offset - 0.7) <= 0.001)
+	a.set_grid(0.25)
+	_mouse(a, Vector2(a.x_of(loop.start) + 2.0, body), Vector2(a.x_of(3.25), body))
+	check("an attack in reach wins over a grid line even right under the pointer (%.4f)" % loop.start,
+			absf(loop.start - 3.23) <= 0.001)
+	a.set_grid(1.0)
+	_mouse(a, Vector2(a.x_of(loop.start) + 2.0, body), Vector2(a.x_of(2.75), body))
+	check("dragged back out, it finds the attack it uncovers (%.4f)" % loop.start, absf(loop.start - 2.7) <= 0.001)
+	var said := a.describe_at(Vector2(a.x_of(loop.start) + 2.0, body))
+	check("its edge says how it snaps (%s)" % said, said.contains("snaps to the grid and the clip's attacks when close, Alt for free"))
+	check("its middle says how a move snaps", a.describe_at(Vector2(a.x_of(4.0), body)).contains("snaps to the grid when close"))
 	s.free()
 
 

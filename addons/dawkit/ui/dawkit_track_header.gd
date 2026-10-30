@@ -38,6 +38,7 @@ var editor: LineEdit
 var _pressed_at := Vector2.INF
 var _monitor_mode := 0
 var _input := ""
+var _input_off := false
 var _dragging := false
 
 
@@ -94,10 +95,13 @@ func _init(with_host: DawKitHost, t: DawKitTrack, at_depth: int, is_folder: bool
 	input.text = "IN"
 	input.flat = false
 	input.focus_mode = Control.FOCUS_NONE
-	input.custom_minimum_size = Vector2(28, 22)
+	input.custom_minimum_size = Vector2(34, 22)
 	input.disabled = not host.can(DawKitHost.INPUTS)
 	input.about_to_popup.connect(_list_inputs)
 	input.get_popup().id_pressed.connect(func(at: int):
+		if at == SET_ASIDE:
+			host.set_input_off(id, not _input_off)
+			return
 		var all := _choices()
 		if at >= 0 and at < all.size():
 			host.set_input(id, all[at][0]))
@@ -116,6 +120,9 @@ func _init(with_host: DawKitHost, t: DawKitTrack, at_depth: int, is_folder: bool
 	clips_label.add_theme_font_size_override("font_size", DawKitLook.SMALL_FONT_SIZE)
 	clips_label.add_theme_color_override("font_color", DawKitLook.TEXT_DIM)
 	clips_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Kept to the header: a long device name ran on under the clips.
+	clips_label.clip_text = true
+	clips_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	add_child(clips_label)
 	show_track(t)
 
@@ -132,14 +139,34 @@ func show_track(t: DawKitTrack) -> void:
 	monitor.set_pressed_no_signal(_monitor_mode != DawKitTrack.Monitor.OFF)
 	monitor.tooltip_text = "Monitor its input: %s (press for %s)" % [MONITOR_WORDS[_monitor_mode], MONITOR_WORDS[(_monitor_mode + 1) % 3]]
 	_input = t.input
+	_input_off = t.input_off
 	var from := input_name(t.input)
-	input.tooltip_text = "Records from: %s" % from
+	input.text = button_text(t.input, t.input_off)
+	input.modulate = Color(1, 1, 1, 0.45) if t.input_off else Color.WHITE
+	input.tooltip_text = "Records from: %s%s" % [from, "  (set aside: not heard, not recorded)" if t.input_off else ""]
 	var n := t.clips.size()
 	var count := "no clips" if n == 0 else ("1 clip" if n == 1 else "%d clips" % n)
-	clips_label.text = count if t.input.is_empty() or not host.can(DawKitHost.INPUTS) else "%s  ·  %s" % [from, count]
+	clips_label.text = count if t.input.is_empty() or not host.can(DawKitHost.INPUTS) else "%s  ·  %s" % [count, from]
 
 
 const MONITOR_WORDS := ["off", "on", "auto, while armed and stopped or recording"]
+
+
+## The menu item that sets the track's input aside, past every input's.
+const SET_ASIDE := 100000
+
+
+## What the IN button says: which side of its device the track takes, or the keys; OFF while its
+## input is set aside. "IN" for both sides, or none chosen.
+static func button_text(input_id: String, off: bool) -> String:
+	if off:
+		return "OFF"
+	if input_id.begins_with("midi"):
+		return "KEY"
+	var mark := input_id.rfind("#")
+	if mark >= 0 and input_id.substr(mark + 1).is_valid_int():
+		return "IN" + input_id.substr(mark + 1)
+	return "IN"
 
 
 ## The host's inputs and none chosen, in the menu's order.
@@ -157,13 +184,33 @@ func input_name(input_id: String) -> String:
 	return input_id
 
 
+## The menu: each device under its own heading, its sides as "both inputs", "input 1" and "input
+## 2"; the keys and none chosen; then the input set aside, where the host can.
 func _list_inputs() -> void:
 	var menu := input.get_popup()
 	menu.clear()
 	var all := _choices()
+	var device := ""
 	for i in all.size():
-		menu.add_radio_check_item(String(all[i][1]), i)
-		menu.set_item_checked(i, all[i][0] == _input)
+		var choice_id := String(all[i][0])
+		var label := String(all[i][1])
+		var mark := choice_id.rfind("#")
+		var side := choice_id.substr(mark + 1) if mark >= 0 and choice_id.substr(mark + 1).is_valid_int() else ""
+		var own := choice_id.substr(0, mark) if side != "" else choice_id
+		if choice_id.begins_with("audio:"):
+			if own != device:
+				device = own
+				menu.add_separator(label.get_slice(",", 0))
+			label = "input %s" % side if side != "" else "both inputs"
+		elif device != "":
+			device = ""
+			menu.add_separator()
+		menu.add_radio_check_item(label, i)
+		menu.set_item_checked(menu.get_item_index(i), choice_id == _input)
+	if host.can(DawKitHost.INPUT_OFF):
+		menu.add_separator()
+		menu.add_check_item("Set its input aside: not heard, not recorded", SET_ASIDE)
+		menu.set_item_checked(menu.get_item_index(SET_ASIDE), _input_off)
 
 
 func show_fold(open: bool) -> void:
@@ -180,6 +227,7 @@ func lay_out(width: float, height: float) -> void:
 	row.position = Vector2(left + 10.0, minf(8.0, (height - 24.0) * 0.5))
 	row.size = Vector2(width - left - 16.0, 24.0)
 	clips_label.position = Vector2(left + 12.0, 34.0)
+	clips_label.size = Vector2(maxf(width - left - 18.0, 0.0), clips_label.size.y)
 	clips_label.visible = height >= 52.0
 	if editor != null:
 		editor.position = name_label.global_position - global_position

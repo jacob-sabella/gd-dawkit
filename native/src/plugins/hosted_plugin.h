@@ -10,6 +10,12 @@
 // parameters, saves its state and runs its window; and the audio thread (Godot's mixer), which only
 // ever calls `process`. Whatever crosses between them goes through lock-free queues and atomics
 // here, never a lock the audio thread could wait on.
+//
+// A plugin can also be made on a loading thread of its own (DawKitPlugin::begin_load), which then
+// stands in for the main thread for that one plugin until it is handed over: loading a heavy one
+// (a Wine plugin through yabridge starts a whole Windows process) takes seconds the game would
+// otherwise stand still for. One loads at a time (`load_lock`), and nothing the plugin asked of the
+// run loop while it loaded runs until it is handed to the main thread.
 
 #include <atomic>
 #include <cstdint>
@@ -121,6 +127,9 @@ public:
 	int add_timer(int period_ms, Callback on_tick);
 	void remove(int id);
 	void pump();
+	// What plugin `owner` (a loading thread's, `loading_owner`) asked for while it loaded, run from
+	// now on. Until then `pump` leaves it be: the plugin is still being made on another thread.
+	void release(int owner);
 
 private:
 	struct Entry {
@@ -130,15 +139,26 @@ private:
 		double due;
 		Callback call;
 		bool gone = false;
+		int owner = 0; // the load it was asked for during, until that load is handed over
 	};
+	// Any thread may add and remove (a loading one does); only the main thread pumps, and never
+	// with this held while it calls a plugin back.
+	std::recursive_mutex lock;
 	std::vector<Entry> entries;
 	int next_id = 1;
 	bool pumping = false;
 };
 
-// Whether this is the thread plugins are made on.
+// Whether this is the thread plugins are made on -- or a loading thread standing in for it.
 bool on_main_thread();
 void set_main_thread();
+// This thread stands in for the main thread for the plugin loading on it (`owner` > 0), or no
+// longer does (0). What it asks of the run loop meanwhile is held under `owner`.
+void stand_in_for_main(int owner);
+int loading_owner();
+// Held by whoever is making or unmaking a plugin, on any thread: a plugin's library may well not
+// take two of those at once, and the formats' module caches are only touched under it.
+std::mutex &load_lock();
 
 // Seconds on a steady clock.
 double now_seconds();
@@ -179,6 +199,11 @@ public:
 
 	// Whatever the plugin asked to be done on the main thread, done. Once a frame.
 	virtual void main_thread() {}
+
+	// Whether it is a Windows plugin through yabridge: its window is made by yabridge's Wine host,
+	// a process of its own, on a connection of its own, and the call that opens it only asks that
+	// process for it -- which is safe from any thread, and slow (seconds) for yabridge to answer.
+	bool is_bridged() const { return bridged; }
 
 	// Its own window, embedded in `parent` (an X11 window, or an HWND). False when it has none or it failed.
 	virtual bool editor_supported() = 0;
@@ -227,6 +252,7 @@ protected:
 	std::atomic<bool> resized{ false };
 	int inputs = 2;
 	int outputs = 2;
+	bool bridged = false;
 };
 
 // Finding plugins. Each returns what is in one file or bundle; nothing found is an empty list and

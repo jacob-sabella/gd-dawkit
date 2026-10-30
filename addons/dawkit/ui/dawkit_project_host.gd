@@ -64,7 +64,7 @@ func use(p: DawKitProject) -> void:
 func can(edit: StringName) -> bool:
 	return edit in [VOLUME, PAN, MUTE, MASTER_MUTE, SOLO, ARM, TRANSPORT, RECORD, SEEK, LOOP, METRONOME, TEMPO,
 			MOVE_CLIP, UNDO, SELECT, EDIT_CLIPS, TRACKS, TRACK_ORDER, EFFECTS, EFFECT_ORDER, SENDS, NOTES,
-			MARKERS, LOOP_RANGE, TEMPO_MAP, COUNT_IN, AUTOMATION, FILES, SAVE, MONITOR]
+			MARKERS, LOOP_RANGE, TEMPO_MAP, COUNT_IN, AUTOMATION, FILES, SAVE, MONITOR, INPUT_OFF]
 
 
 func position() -> float:
@@ -90,6 +90,16 @@ func advance(seconds: float) -> void:
 
 func undo_name() -> String:
 	return _undo.back()[1] if not _undo.is_empty() else ""
+
+
+## From the clip's file: its `source` as it is, when that is a whole path, or under media_root.
+func clip_transients(id: String, clip_index: int) -> PackedFloat32Array:
+	var c := _clip(id, clip_index)
+	if c == null or c.source.is_empty():
+		return PackedFloat32Array()
+	var path := c.source if c.source.is_absolute_path() or media_root.is_empty() else media_root.path_join(c.source)
+	return DawKitTransients.placed(DawKitTransients.soon(path, c.reversed), c.start, c.source_offset, c.length,
+			c.loop_start, c.loop_end)
 
 
 func set_volume(id: String, db: float) -> void:
@@ -118,6 +128,10 @@ func set_input(id: String, input: String) -> void:
 
 func set_monitor(id: String, mode: int) -> void:
 	_track_edit(id, "monitor", func(t: DawKitTrack): t.monitor = clampi(mode, 0, 2) as DawKitTrack.Monitor)
+
+
+func set_input_off(id: String, off: bool) -> void:
+	_track_edit(id, "input off", func(t: DawKitTrack): t.input_off = off)
 
 
 func play() -> void:
