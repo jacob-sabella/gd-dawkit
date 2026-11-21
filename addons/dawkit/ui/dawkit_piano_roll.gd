@@ -40,8 +40,14 @@ var pixels_per_second := 160.0
 ## The pitch of the top row.
 var pitch_top := 84
 var grid := 0.25
-## The note picked by a click, by its place in the clip's notes; -1 for none.
-var selected := -1
+## The note picked by a click, by its place in the clip's notes; -1 for none. Its place can change
+## under it (an undo puts the notes back), so what is held is the note itself: see _reselect.
+var selected := -1:
+	set(n):
+		var c := clip()
+		var there := c != null and n >= 0 and n < c.note_count()
+		selected = n if there else -1
+		_held = [c.notes[n * DawKitClip.NOTE_WIDTH], int(c.notes[n * DawKitClip.NOTE_WIDTH + 2])] if there else []
 
 var title: Label
 var grid_button: OptionButton
@@ -52,6 +58,8 @@ var _drag: Dictionary = {}
 ## Whether the view is still as it was framed: until it is zoomed or scrolled, it frames the clip
 ## again whenever it changes size (and it is opened before it is laid out).
 var _framed := false
+## The picked note as [on, pitch]; empty for none.
+var _held: Array = []
 
 
 func _init(with_host: DawKitHost) -> void:
@@ -109,7 +117,7 @@ func show_clip(track_id: String, at: int) -> void:
 	id = track_id
 	index = at
 	selected = -1
-	_drag = {}
+	_let_go()
 	var c := clip()
 	if c == null:
 		id = ""
@@ -153,8 +161,7 @@ func refresh() -> void:
 	title.text = "%s  >  %s" % [t.name if not t.name.is_empty() else t.id, c.name if not c.name.is_empty() else "clip %d" % (index + 1)]
 	title.tooltip_text = title.text
 	quantize_button.disabled = not editable()
-	if selected >= c.note_count():
-		selected = -1
+	_reselect()
 	queue_redraw()
 
 
@@ -251,10 +258,20 @@ func velocity_note_at(x: float) -> int:
 	return best
 
 
-## Every note onto the grid.
+## Every note onto the grid, the picked note staying picked where the grid takes it.
 func quantize() -> void:
-	if editable():
-		host.quantize_clip(id, index, grid)
+	if not editable():
+		return
+	var c := clip()
+	var want := -1.0
+	var pitch := -1
+	if selected >= 0:
+		var o := selected * DawKitClip.NOTE_WIDTH
+		pitch = int(c.notes[o + 2])
+		want = clampf(snap(c.start + c.notes[o]) - c.start, 0.0, maxf(c.length - (c.notes[o + 1] - c.notes[o]), 0.0))
+	host.quantize_clip(id, index, grid)
+	if pitch >= 0:
+		selected = find_note(want, pitch)
 
 
 ## The clip's place in its notes of the note at `on` sounding `pitch`, as it is after an edit
@@ -273,29 +290,57 @@ func find_note(on: float, pitch: int) -> int:
 	return best
 
 
+## Finds the picked note again after the clip's notes changed, at the place it had when it is
+## still there (two notes can share a time and a pitch), and lets go of a drag whose note went.
+func _reselect() -> void:
+	var c := clip()
+	if c == null or _held.is_empty():
+		selected = -1
+	else:
+		var o := selected * DawKitClip.NOTE_WIDTH
+		if selected < 0 or selected >= c.note_count() or int(c.notes[o + 2]) != _held[1] or absf(c.notes[o] - _held[0]) > 0.002:
+			selected = find_note(_held[0], _held[1])
+	if _drag.get("what", "") in ["velocity", "move", "end"]:
+		if selected < 0:
+			_let_go()
+		else:
+			_drag["note"] = selected
+
+
+## Drops the drag in hand, closing the undo step a velocity drag opened.
+func _let_go() -> void:
+	var velocity: bool = _drag.get("what", "") == "velocity"
+	_drag = {}
+	if velocity:
+		host.end_gesture()
+
+
 ## Does what a key asks while it is open, and says whether it asked for anything.
 func key(k: InputEventKey) -> bool:
+	_reselect()
+	var mods := DawKitStudio.held(k)
 	match k.keycode:
-		KEY_ESCAPE:
+		# A drag can be holding Alt (no snapping), and Esc still has to let go of it.
+		KEY_ESCAPE when mods == 0 or not _drag.is_empty():
 			if not _drag.is_empty():
-				_drag = {}
+				_let_go()
 				queue_redraw()
 			else:
 				close()
 			return true
-		KEY_DELETE, KEY_BACKSPACE:
+		KEY_DELETE, KEY_BACKSPACE when mods == 0:
 			if selected >= 0 and editable():
 				host.delete_note(id, index, selected)
 				selected = -1
 			return true
-		KEY_Q when not k.ctrl_pressed:
+		KEY_Q when mods == 0:
 			quantize()
 			return true
-		KEY_UP, KEY_DOWN:
+		KEY_UP, KEY_DOWN when mods == 0 or mods == KEY_MASK_SHIFT:
 			var c := clip()
 			if selected >= 0 and editable() and c != null:
 				var o := selected * DawKitClip.NOTE_WIDTH
-				var by := (12 if k.shift_pressed else 1) * (1 if k.keycode == KEY_UP else -1)
+				var by := (12 if mods == KEY_MASK_SHIFT else 1) * (1 if k.keycode == KEY_UP else -1)
 				var on := c.notes[o]
 				var pitch := clampi(int(c.notes[o + 2]) + by, 0, 127)
 				host.move_note(id, index, selected, on, pitch)
@@ -337,6 +382,9 @@ func _on_button(e: InputEventMouseButton) -> void:
 		return
 	if not e.pressed:
 		return
+	# A release that never came (the window lost the pointer) ends with the next press.
+	if e.button_index == MOUSE_BUTTON_LEFT:
+		_let_go()
 	grab_focus()
 	if e.position.y < BAR_HEIGHT:
 		return
@@ -364,6 +412,7 @@ func _on_button(e: InputEventMouseButton) -> void:
 		if v >= 0:
 			selected = v
 			if editable():
+				host.begin_gesture("velocity")
 				_drag = {"what": "velocity", "note": v}
 				_set_velocity(e.position.y)
 		queue_redraw()
@@ -397,7 +446,11 @@ func _on_motion(e: InputEventMouseMotion) -> void:
 		return
 	var c := clip()
 	if c == null:
-		_drag = {}
+		_let_go()
+		return
+	_reselect()
+	if _drag.is_empty():
+		queue_redraw()
 		return
 	var at := time_at(e.position.x)
 	var free := e.alt_pressed
@@ -423,7 +476,7 @@ func _release(_e: InputEventMouseButton) -> void:
 	if _drag.is_empty():
 		return
 	var d := _drag
-	_drag = {}
+	_let_go()
 	queue_redraw()
 	if clip() == null:
 		return
@@ -476,6 +529,9 @@ func _scroll_to(top: int) -> void:
 
 
 func _notification(what: int) -> void:
+	# Hidden or gone, it will never hear the release.
+	if what == NOTIFICATION_EXIT_TREE or (what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree()):
+		_let_go()
 	if what == NOTIFICATION_RESIZED and is_open():
 		if _framed and clip() != null:
 			_frame(clip())

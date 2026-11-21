@@ -24,6 +24,8 @@ var _undo: Array = []
 var _redo: Array = []
 ## The selected clips, the clips themselves as keys, so an index moving does not lose one.
 var _selected: Dictionary = {}
+## What Ctrl+C and Ctrl+X took, in plain form, so it outlives undo: {row, at, clip} each.
+var _clipboard: Array = []
 
 const MIN_CLIP_SECONDS := 0.01
 const MIN_NOTE_SECONDS := 0.01
@@ -767,6 +769,83 @@ func duplicate_selection() -> void:
 	clips_changed.emit()
 
 
+func copy_clips() -> void:
+	var picked := selection()
+	if picked.is_empty():
+		said.emit("Nothing selected to copy.")
+		return
+	_clipboard = _captured(picked)
+	said.emit("Copied %s." % _clips_named(picked.size()))
+
+
+func cut_clips() -> void:
+	var picked := selection()
+	if picked.is_empty():
+		said.emit("Nothing selected to cut.")
+		return
+	var taken := picked.filter(func(pair: Array) -> bool: return not pair[1].locked)
+	var stayed := picked.size() - taken.size()
+	if taken.is_empty():
+		said.emit("Nothing cut: %s locked." % _clips_named(stayed))
+		return
+	_step("cut")
+	_clipboard = _captured(taken)
+	for pair in taken:
+		(pair[0] as DawKitTrack).clips.erase(pair[1])
+		_selected.erase(pair[1])
+	clips_changed.emit()
+	said.emit("Cut %s." % _clips_named(taken.size()) + ("" if stayed == 0 else " %s locked, left in place." % _clips_named(stayed)))
+
+
+func paste_clips(track_id: String, seconds: float) -> void:
+	if _clipboard.is_empty():
+		said.emit("Nothing copied to paste.")
+		return
+	if track_id.is_empty():
+		said.emit("Point at a lane or select a clip to paste.")
+		return
+	var top := _project.tracks.find(_project.track(track_id))
+	if top < 0:
+		said.emit("That track is gone, so nothing was pasted.")
+		return
+	var rows := 1
+	for entry in _clipboard:
+		rows = maxi(rows, int(entry["row"]) + 1)
+	if top + rows > _project.tracks.size():
+		said.emit("Nothing pasted: it spans %d tracks and only %d are left from here." % [rows, _project.tracks.size() - top])
+		return
+	_step("paste")
+	_selected.clear()
+	var at := maxf(seconds, 0.0)
+	for entry in _clipboard:
+		var copy := DawKitClip.from_dict(entry["clip"])
+		copy.start = at + float(entry["at"])
+		var t := _project.tracks[top + int(entry["row"])]
+		t.clips.append(copy)
+		t.clips.sort_custom(func(a: DawKitClip, b: DawKitClip): return a.start < b.start)
+		_selected[copy] = true
+	clips_changed.emit()
+	said.emit("Pasted %s." % _clips_named(_clipboard.size()))
+
+
+## `picked` ([track, clip] pairs) in plain form: each clip's track as rows below the topmost of
+## them and its start as seconds after the earliest, so a paste can stand them anywhere.
+func _captured(picked: Array) -> Array:
+	var top := _project.tracks.size()
+	var first := INF
+	for pair in picked:
+		top = mini(top, _project.tracks.find(pair[0]))
+		first = minf(first, pair[1].start)
+	var out: Array = []
+	for pair in picked:
+		out.append({"row": _project.tracks.find(pair[0]) - top, "at": pair[1].start - first, "clip": (pair[1] as DawKitClip).to_dict()})
+	return out
+
+
+static func _clips_named(n: int) -> String:
+	return "%d clip%s" % [n, "" if n == 1 else "s"]
+
+
 func trim_clip(id: String, clip_index: int, start: float, end: float) -> void:
 	var c := _clip(id, clip_index)
 	if c == null or c.locked:
@@ -831,6 +910,21 @@ func set_clip_muted(id: String, clip_index: int, muted: bool) -> void:
 	_step("mute clip")
 	c.muted = muted
 	clips_changed.emit()
+
+
+## A gesture is one step and the next is another, even on the same control: the merge key of the
+## last step is closed at both ends.
+func begin_gesture(_name: String) -> void:
+	_close_merge()
+
+
+func end_gesture() -> void:
+	_close_merge()
+
+
+func _close_merge() -> void:
+	if not _undo.is_empty() and _undo.back().size() > 2:
+		_undo.back()[2] = ""
 
 
 func undo() -> void:
