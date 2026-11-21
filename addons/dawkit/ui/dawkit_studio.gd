@@ -10,7 +10,9 @@ extends PanelContainer
 ## Keys, while it is showing: Space plays and stops, Ctrl+R records, Home goes back to the
 ## start, L loops, C clicks, Ctrl+Z undoes and Ctrl+Shift+Z (or Ctrl+Y) redoes, and F5, F6 and F7
 ## show the arrangement, the mixer, or both. For the selected clips: S splits them at the playhead,
-## Delete deletes them, Ctrl+D duplicates them, Ctrl+A selects every clip and Esc none. Ctrl+T adds a track.
+## Delete deletes them, Ctrl+D duplicates them, Ctrl+X cuts and Ctrl+C copies them, Ctrl+V pastes at
+## the lane under the pointer (else the first selected clip's track, at the playhead), Ctrl+A selects
+## every clip and Ctrl+Shift+A (or Esc) none. Ctrl+T adds a track.
 ## Ctrl+N starts a project, Ctrl+O opens one, Ctrl+S saves and Ctrl+Shift+S saves as (FILE has
 ## them, recent files and rendering); the status line along the bottom says what the host said.
 ## Double-clicking a MIDI clip puts its notes in a piano roll where the arrangement was, until Esc.
@@ -24,7 +26,9 @@ const KEY_LIST := [
 	["Home  /  End", "To the start, to the end"], ["=  /  -", "Zoom in, out"],
 	["M", "A marker at the playhead"], ["Ctrl+Z", "Undo"], ["Ctrl+Shift+Z  or  Ctrl+Y", "Redo"],
 	["S", "Split the selected clips at the playhead"], ["Delete", "Delete the selected clips (or the picked note)"],
-	["Ctrl+D", "Duplicate the selected clips"], ["Ctrl+A", "Select every clip"], ["Esc", "Select nothing; out of the piano roll"],
+	["Ctrl+D", "Duplicate the selected clips"], ["Ctrl+X  /  Ctrl+C", "Cut, copy the selected clips"],
+	["Ctrl+V", "Paste at the lane under the pointer, else the selected clip's track at the playhead"],
+	["Ctrl+A", "Select every clip"], ["Ctrl+Shift+A", "Select nothing"], ["Esc", "Select nothing; out of the piano roll"],
 	["Ctrl+T", "A new track"], ["Ctrl+N  /  Ctrl+O", "A new project, open one"], ["Ctrl+S  /  Ctrl+Shift+S", "Save, save as"],
 	["F5  /  F6  /  F7", "The arrangement, the mixer, both"], ["Q", "Quantize (in the piano roll)"],
 	["Up  /  Down", "Transpose the picked note (Shift: an octave)"], ["F1", "This list"],
@@ -35,6 +39,10 @@ enum View { ARRANGE, MIXER, BOTH }
 const SAID_SECONDS := 6.0
 const VIEW_NAMES: Array[String] = ["ARRANGE", "MIXER", "BOTH"]
 const VIEW_KEYS := [KEY_F5, KEY_F6, KEY_F7]
+## The modifiers a key is told apart by: Shift+S is not S, and Alt+Home is not Home.
+const MODIFIERS: int = KEY_MASK_SHIFT | KEY_MASK_CTRL | KEY_MASK_ALT | KEY_MASK_META
+const CTRL: int = KEY_MASK_CTRL
+const CTRL_SHIFT: int = KEY_MASK_CTRL | KEY_MASK_SHIFT
 
 var host: DawKitHost
 var transport: DawKitTransportBar
@@ -101,6 +109,9 @@ func _init(with_host: DawKitHost) -> void:
 	piano_roll = DawKitPianoRoll.new(host)
 	top.add_child(piano_roll)
 	arrange.clip_opened.connect(open_clip)
+	arrange.paste_asked.connect(func(at: Vector2):
+		var spot := paste_spot(at)
+		host.paste_clips(spot[0], spot[1]))
 	transport.grid_asked.connect(arrange.set_grid)
 	transport.grid.select(DawKitArrange.GRIDS.find(arrange.grid))
 	piano_roll.closed.connect(func():
@@ -350,54 +361,91 @@ func _process(_delta: float) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not is_visible_in_tree() or not (event is InputEventKey) or not event.pressed or event.echo:
 		return
-	if get_viewport().gui_get_focus_owner() is LineEdit:
+	if _typing():
 		return
 	if _key(event as InputEventKey):
 		get_viewport().set_input_as_handled()
 
 
-## Selects every clip in the project.
-func select_all() -> void:
+## Whether a text field has the keys. A LineEdit keeps its focus after Enter but is done with
+## them then; a TextEdit has no such state, so it has them for as long as it has the focus.
+func _typing() -> bool:
+	var focused := get_viewport().gui_get_focus_owner()
+	return focused is TextEdit or (focused is LineEdit and (focused as LineEdit).is_editing())
+
+
+## The modifiers held with `k`, and only those: what the keys compare against.
+static func held(k: InputEventKey) -> int:
+	return int(k.get_modifiers_mask()) & MODIFIERS
+
+
+## Where a paste goes for a pointer at `at` (the arrangement's own pixels), as [track id, seconds]:
+## the clip lane under it, pulled onto the grid; off the lanes, the first selected clip's track at
+## the playhead; and an empty id when there is neither.
+func paste_spot(at: Vector2) -> Array:
+	if arrange.is_visible_in_tree() and Rect2(Vector2.ZERO, arrange.size).has_point(at) and at.x >= DawKitArrange.HEADER_WIDTH:
+		var row := arrange.row_at(at.y)
+		if row >= 0 and row < arrange._order.size() and at.y - arrange.lane_top(row) < arrange.lane_height:
+			return [arrange._order[row], arrange.magnet(arrange.time_at(at.x))]
 	var p := host.project()
-	if p == null:
-		return
-	var first := true
-	for t in p.tracks:
-		for i in t.clips.size():
-			host.select_clip(t.id, i, not first)
-			first = false
+	if p != null:
+		for t in p.tracks:
+			for i in t.clips.size():
+				if host.is_selected(t.id, i):
+					return [t.id, host.position()]
+	return ["", host.position()]
 
 
-## Does what a key asks, and says whether it asked for anything.
+## Whether a key may change the clips: not in the piano roll, and not mid-drag, whose release names
+## its clip by an index those keys would shift.
+func _clips_free() -> bool:
+	if view == View.MIXER and host.can(DawKitHost.EDIT_CLIPS) and not piano_roll.is_open():
+		say("The clips are not showing: F5 or F7 brings them back.")
+		return false
+	return host.can(DawKitHost.EDIT_CLIPS) and not piano_roll.is_open() and not _refused_mid_drag()
+
+
+## Whether a drag is on, having said so.
+func _refused_mid_drag() -> bool:
+	if not arrange.in_gesture():
+		return false
+	say("Let go of the drag first.")
+	return true
+
+
+## Does what a key asks, and says whether it asked for anything. Every key wants exactly its
+## modifiers. The piano roll has the keys only while it shows; open at all, it stands where the
+## clips were, so the keys that edit clips leave them alone rather than change what is not in view.
 func _key(k: InputEventKey) -> bool:
-	if piano_roll.is_open() and piano_roll.key(k):
+	if piano_roll.is_open() and piano_roll.is_visible_in_tree() and piano_roll.key(k):
 		return true
+	var mods := held(k)
 	match k.keycode:
-		KEY_N when k.ctrl_pressed:
+		KEY_N when mods == CTRL:
 			file_item(DawKitTransportBar.FILE_NEW)
 			return true
-		KEY_O when k.ctrl_pressed:
+		KEY_O when mods == CTRL:
 			file_item(DawKitTransportBar.FILE_OPEN)
 			return true
-		KEY_S when k.ctrl_pressed:
-			file_item(DawKitTransportBar.FILE_SAVE_AS if k.shift_pressed else DawKitTransportBar.FILE_SAVE)
+		KEY_S when mods == CTRL or mods == CTRL_SHIFT:
+			file_item(DawKitTransportBar.FILE_SAVE_AS if mods == CTRL_SHIFT else DawKitTransportBar.FILE_SAVE)
 			return true
-		KEY_SPACE:
+		KEY_SPACE when mods == 0:
 			if host.can(DawKitHost.TRANSPORT):
 				host.stop() if host.is_playing() else host.play()
 			return true
-		KEY_R when k.ctrl_pressed:
+		KEY_R when mods == CTRL:
 			if host.can(DawKitHost.RECORD):
 				host.stop() if host.is_recording() else host.record()
 			return true
-		KEY_HOME:
+		KEY_HOME when mods == 0:
 			if host.can(DawKitHost.SEEK):
 				host.seek(0.0)
 			return true
-		KEY_F1:
+		KEY_F1 when mods == 0:
 			show_keys()
 			return true
-		KEY_END:
+		KEY_END when mods == 0:
 			var p := host.project()
 			if host.can(DawKitHost.SEEK) and p != null:
 				var last := p.length
@@ -406,59 +454,77 @@ func _key(k: InputEventKey) -> bool:
 						last = maxf(last, c.end())
 				host.seek(last)
 			return true
-		KEY_EQUAL, KEY_KP_ADD, KEY_MINUS, KEY_KP_SUBTRACT:
+		KEY_EQUAL, KEY_KP_ADD, KEY_MINUS, KEY_KP_SUBTRACT when mods == 0:
 			var into := k.keycode in [KEY_EQUAL, KEY_KP_ADD]
 			var w := arrange.size.x - DawKitArrange.HEADER_WIDTH
 			var centre := arrange.view_start + w * 0.5 / arrange.pixels_per_second
 			var pps := clampf(arrange.pixels_per_second * (1.25 if into else 0.8), DawKitArrange.MIN_PIXELS_PER_SECOND, DawKitArrange.MAX_PIXELS_PER_SECOND)
 			arrange.set_view(centre - w * 0.5 / pps, pps)
 			return true
-		KEY_M when not k.ctrl_pressed:
+		KEY_M when mods == 0:
 			if host.can(DawKitHost.MARKERS):
 				host.add_marker(host.position())
 			return true
-		KEY_L, KEY_R when not k.ctrl_pressed:
+		KEY_L, KEY_R when mods == 0:
 			if host.can(DawKitHost.LOOP) and host.project() != null:
 				host.set_looping(not host.project().loop_on)
 			return true
-		KEY_C when not k.ctrl_pressed:
+		KEY_C when mods == 0:
 			if host.can(DawKitHost.METRONOME) and host.project() != null:
 				host.set_metronome(not host.project().metronome)
 			return true
-		KEY_Z when k.ctrl_pressed:
-			if host.can(DawKitHost.UNDO):
-				host.redo() if k.shift_pressed else host.undo()
+		KEY_Z when mods == CTRL or mods == CTRL_SHIFT:
+			if host.can(DawKitHost.UNDO) and not _refused_mid_drag():
+				host.redo() if mods == CTRL_SHIFT else host.undo()
 			return true
-		KEY_Y when k.ctrl_pressed:
-			if host.can(DawKitHost.UNDO):
+		KEY_Y when mods == CTRL:
+			if host.can(DawKitHost.UNDO) and not _refused_mid_drag():
 				host.redo()
 			return true
-		KEY_S when not k.ctrl_pressed:
-			if host.can(DawKitHost.EDIT_CLIPS):
+		KEY_S when mods == 0:
+			if _clips_free():
 				host.split_selection(host.position())
 			return true
-		KEY_DELETE, KEY_BACKSPACE:
-			if host.can(DawKitHost.EDIT_CLIPS):
+		KEY_DELETE, KEY_BACKSPACE when mods == 0:
+			if _clips_free():
 				host.delete_selection()
 			return true
-		KEY_D when k.ctrl_pressed:
-			if host.can(DawKitHost.EDIT_CLIPS):
+		KEY_D when mods == CTRL:
+			if _clips_free():
 				host.duplicate_selection()
 			return true
-		KEY_A when k.ctrl_pressed:
-			if host.can(DawKitHost.SELECT):
-				select_all()
+		KEY_X when mods == CTRL:
+			if _clips_free():
+				host.cut_clips()
 			return true
-		KEY_T when k.ctrl_pressed:
+		KEY_C when mods == CTRL:
+			if host.can(DawKitHost.EDIT_CLIPS) and not piano_roll.is_open():
+				host.copy_clips()
+			return true
+		KEY_V when mods == CTRL:
+			if _clips_free():
+				var spot := paste_spot(arrange.get_local_mouse_position())
+				host.paste_clips(spot[0], spot[1])
+			return true
+		KEY_A when mods == CTRL:
+			if host.can(DawKitHost.SELECT) and not piano_roll.is_open():
+				host.select_all_clips()
+			return true
+		KEY_A when mods == CTRL_SHIFT:
+			if host.can(DawKitHost.SELECT) and not piano_roll.is_open():
+				host.clear_selection()
+			return true
+		KEY_T when mods == CTRL:
 			if host.can(DawKitHost.TRACKS):
 				host.add_track("")
 			return true
-		KEY_ESCAPE:
-			if host.can(DawKitHost.SELECT):
+		# A drag can be holding Alt (no snapping), and Esc still has to let go of it.
+		KEY_ESCAPE when mods == 0 or arrange.in_gesture():
+			if not arrange.cancel_gesture() and host.can(DawKitHost.SELECT):
 				host.clear_selection()
 			return true
 	var v := VIEW_KEYS.find(k.keycode)
-	if v >= 0:
+	if v >= 0 and mods == 0:
 		show_view(v)
 		return true
 	return false

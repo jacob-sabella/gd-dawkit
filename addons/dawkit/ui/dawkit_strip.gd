@@ -70,6 +70,8 @@ func _init(with_host: DawKitHost, track_id: String) -> void:
 	pan.min_value = -1.0
 	pan.max_value = 1.0
 	pan.step = 0.01
+	# A click leaves the keys with the studio: focused, a slider would take Home and the arrows.
+	pan.focus_mode = Control.FOCUS_NONE
 	pan.tooltip_text = "Pan (double-click: centre)"
 	pan.editable = host.can(DawKitHost.PAN)
 	pan.value_changed.connect(func(v: float): host.set_pan(id, v))
@@ -86,6 +88,7 @@ func _init(with_host: DawKitHost, track_id: String) -> void:
 	fader.min_value = 0.0
 	fader.max_value = 1.0
 	fader.step = 0.0
+	fader.focus_mode = Control.FOCUS_NONE
 	fader.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	fader.custom_minimum_size = Vector2(28, 90)
 	fader.tooltip_text = "Level (double-click: 0 dB)"

@@ -12,6 +12,17 @@ func _initialize() -> void:
 
 
 func _run() -> void:
+	# DAWKIT_TESTS=_test_one,_test_two runs just those.
+	var named := OS.get_environment("DAWKIT_TESTS").strip_edges()
+	if not named.is_empty():
+		for test in named.split(",", false):
+			var called := test.strip_edges()
+			if has_method(called):
+				await call(called)
+			else:
+				check("there is a test called %s" % called, false)
+		_finish()
+		return
 	_test_a_project_survives_its_plain_form()
 	_test_every_field_is_in_the_plain_form()
 	_test_a_difference_is_found_and_named()
@@ -74,6 +85,28 @@ func _run() -> void:
 	_test_the_2d_arrange_draws_automation()
 	_test_the_2d_studio_saves_and_opens()
 	_test_the_2d_studio_says_what_is_under_the_pointer()
+	_test_keys_need_their_exact_modifiers()
+	await _test_a_clicked_fader_ignores_home()
+	await _test_keys_return_after_a_typed_tempo()
+	_test_a_hidden_piano_roll_takes_no_keys()
+	await _test_clips_copy_cut_and_paste()
+	_test_a_paste_is_one_undo()
+	_test_paste_past_the_last_track_refuses()
+	_test_ctrl_shift_a_clears()
+	_test_select_all_works_on_a_minimal_host()
+	_test_esc_cancels_an_arrange_drag()
+	_test_clip_keys_wait_for_an_arrange_drag()
+	_test_a_missed_ctrl_click_keeps_the_selection()
+	await _test_the_empty_menu_pastes()
+	_test_a_velocity_drag_is_one_gesture()
+	_test_two_velocity_drags_are_two_steps()
+	_test_the_mixer_view_keeps_clip_keys_off()
+	_test_the_file_menu_disables_save_itself()
+	_test_delete_after_undo_keeps_the_right_note()
+	_finish()
+
+
+func _finish() -> void:
 	OS.execute("rm", ["-rf", OS.get_temp_dir().path_join("dawkit_tests_%d" % OS.get_process_id())])
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -2625,3 +2658,646 @@ func _test_the_2d_studio_says_what_is_under_the_pointer() -> void:
 	DawKitLook.use_signals({})
 	DawKitLook.set_text_scale(1.0)
 	check("and both go back", DawKitLook.MUTE == DawKitLook.SIGNALS_AS_MADE["mute"] and DawKitLook.FONT_SIZE == 13)
+
+
+func _chord(code: Key, ctrl := false, shift := false, alt := false, meta := false) -> InputEventKey:
+	var k := InputEventKey.new()
+	k.pressed = true
+	k.keycode = code
+	k.ctrl_pressed = ctrl
+	k.shift_pressed = shift
+	k.alt_pressed = alt
+	k.meta_pressed = meta
+	return k
+
+
+func _test_keys_need_their_exact_modifiers() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var clips: int = host.project().track("t3").clips.size()
+	host.select_clip("t3", 0, false)
+	host.seek(0.5)
+	check("Shift+S is not a key", not s._key(_chord(KEY_S, false, true)))
+	check("Alt+S is not a key", not s._key(_chord(KEY_S, false, false, true)))
+	check("Meta+S is not a key", not s._key(_chord(KEY_S, false, false, false, true)))
+	check("and none of them split", host.project().track("t3").clips.size() == clips)
+	check("Ctrl+Alt+S does not save", not s._key(_chord(KEY_S, true, false, true)))
+	check("Shift+Delete deletes nothing", not s._key(_chord(KEY_DELETE, false, true)) and host.project().track("t3").clips.size() == clips)
+	check("Ctrl+Shift+D duplicates nothing", not s._key(_chord(KEY_D, true, true)) and host.project().track("t3").clips.size() == clips)
+	check("Alt+Space does not play", not s._key(_chord(KEY_SPACE, false, false, true)) and not host.is_playing())
+	check("Ctrl+Home does not seek", not s._key(_chord(KEY_HOME, true)) and is_equal_approx(host.position(), 0.5))
+	check("Ctrl+Shift+R does not record", not s._key(_chord(KEY_R, true, true)) and not host.is_recording())
+	check("Ctrl+Shift+Y does not redo", not s._key(_chord(KEY_Y, true, true)))
+	check("Shift+F6 changes no view", not s._key(_chord(KEY_F6, false, true)) and s.view == DawKitStudio.View.BOTH)
+	check("plain S still splits", s._key(_chord(KEY_S)) and host.project().track("t3").clips.size() == clips + 1)
+	check("Ctrl+Z still undoes", s._key(_chord(KEY_Z, true)) and host.project().track("t3").clips.size() == clips)
+	check("Ctrl+Shift+Z still redoes", s._key(_chord(KEY_Z, true, true)) and host.project().track("t3").clips.size() == clips + 1)
+	s.transport._fill_file_menu()
+	var menu := s.transport.file_menu.get_popup()
+	var bound := 0
+	var named := false
+	for i in menu.item_count:
+		bound += 1 if menu.get_item_accelerator(i) != 0 else 0
+		named = named or menu.get_item_text(i) == "Save  (Ctrl+S)"
+	check("the FILE menu names its keys but does not answer them", bound == 0 and named)
+	s.free()
+
+
+func _test_a_clicked_fader_ignores_home() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	await process_frame
+	await process_frame
+	var strip: DawKitStrip = s.mixer.strips["t2"]
+	check("a strip's sliders take no focus", strip.fader.focus_mode == Control.FOCUS_NONE and strip.pan.focus_mode == Control.FOCUS_NONE)
+	var row := s.effect_panel._control_row(0, "Drive", true)
+	check("nor the effect panel's", s.effect_panel.wet.focus_mode == Control.FOCUS_NONE
+			and (row.get_node("Slider") as HSlider).focus_mode == Control.FOCUS_NONE)
+	row.free()
+	strip.fader.value = 0.0
+	var before: float = host.project().track("t2").volume_db
+	# A headless window is 64 pixels square: the studio is slid so the fader's top is inside it
+	# (its foot can be scrolled under the status line).
+	s.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	var top := strip.fader.get_global_rect().position + Vector2(strip.fader.size.x * 0.5, 8.0)
+	s.position -= top - root.get_visible_rect().get_center()
+	var at := strip.fader.get_global_rect().position + Vector2(strip.fader.size.x * 0.5, 8.0)
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.position = at
+	down.global_position = at
+	down.pressed = true
+	root.push_input(down)
+	var up: InputEventMouseButton = down.duplicate()
+	up.pressed = false
+	root.push_input(up)
+	await process_frame
+	check("the click reached the fader", not is_equal_approx(host.project().track("t2").volume_db, before))
+	check("a click leaves the fader without the focus", not strip.fader.has_focus())
+	var level: float = host.project().track("t2").volume_db
+	host.seek(2.0)
+	root.push_input(_chord(KEY_HOME))
+	await process_frame
+	check("Home leaves its level alone", is_equal_approx(host.project().track("t2").volume_db, level))
+	check("and goes to the start", is_equal_approx(host.position(), 0.0))
+	s.free()
+
+
+## A host with a project and select_clip, and none of the clipboard: what a new host starts as.
+class OnlySelects extends DawKitHost:
+	var held: DawKitProject
+	var picked: Dictionary = {}
+
+	func _init(p: DawKitProject) -> void:
+		held = p
+
+	func project() -> DawKitProject:
+		return held
+
+	func can(edit: StringName) -> bool:
+		return edit in [SELECT, EDIT_CLIPS]
+
+	func is_selected(id: String, clip_index: int) -> bool:
+		return picked.has("%s/%d" % [id, clip_index])
+
+	func select_clip(id: String, clip_index: int, additive := false) -> void:
+		if not additive:
+			picked.clear()
+		picked["%s/%d" % [id, clip_index]] = true
+
+
+func _test_clips_copy_cut_and_paste() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	await process_frame
+	await process_frame
+	var p := host.project()
+	var told: Array[String] = []
+	host.said.connect(func(text: String): told.append(text))
+	host.select_clip("t1", 0, false)
+	host.select_clip("t3", 0, true)
+	var steps: int = host._undo.size()
+	check("Ctrl+C is a key", s._key(_chord(KEY_C, true)))
+	check("a copy changes nothing and is no step", p.track("t1").clips.size() == 1 and host._undo.size() == steps)
+	check("plain C is still the metronome", s._key(_chord(KEY_C)) and p.metronome)
+	host.paste_clips("t1", 10.0)
+	check("a paste keeps the clips' time apart", p.track("t1").clips.size() == 2 and is_equal_approx(p.track("t1").clips[1].start, 12.0)
+			and is_equal_approx(p.track("t3").clips[1].start, 10.0))
+	check("and their tracks", p.track("t2").clips.is_empty())
+	check("and what is in them", p.track("t3").clips[1].notes == p.track("t3").clips[0].notes)
+	check("the pasted clips are the selection", host.selection().size() == 2 and host.is_selected("t1", 1) and host.is_selected("t3", 1)
+			and not host.is_selected("t1", 0))
+	check("Ctrl+X is a key", s._key(_chord(KEY_X, true)))
+	check("a cut takes them out", p.track("t1").clips.size() == 1 and p.track("t3").clips.size() == 1 and host.selection().is_empty())
+	host.paste_clips("t1", 20.0)
+	check("and a cut pastes", p.track("t1").clips.size() == 2 and is_equal_approx(p.track("t1").clips[1].start, 22.0)
+			and p.track("t3").clips.size() == 2 and is_equal_approx(p.track("t3").clips[1].start, 20.0))
+	host.undo()
+	p = host.project()
+	p.track("t1").clips[0].locked = true
+	host.select_clip("t1", 0, false)
+	host.select_clip("t3", 0, true)
+	host.cut_clips()
+	check("a cut leaves a locked clip", p.track("t1").clips.size() == 1 and p.track("t3").clips.is_empty())
+	check("still selected", host.is_selected("t1", 0))
+	check("and says so", told.back().contains("1 clip locked"))
+	var before: Array = host._clipboard
+	host.cut_clips()
+	check("all locked, the clipboard is kept", host._clipboard == before and told.back().begins_with("Nothing cut"))
+	host.clear_selection()
+	# The lane under the pointer, pulled onto the grid; off it, the selection's track at the playhead.
+	var lane := Vector2(s.arrange.x_of(4.02), s.arrange.lane_top(1) + 10.0)
+	var spot := s.paste_spot(lane)
+	check("a paste lands on the lane under the pointer", spot[0] == "t2")
+	check("on the grid", is_equal_approx(spot[1], s.arrange.magnet(s.arrange.time_at(lane.x))))
+	host.seek(7.0)
+	check("off the lanes with nothing selected it has nowhere", s.paste_spot(Vector2(4.0, 4.0))[0] == "")
+	host.select_clip("t1", 0, false)
+	var fallback := s.paste_spot(Vector2(4.0, 4.0))
+	check("else the selected clip's track at the playhead", fallback[0] == "t1" and is_equal_approx(fallback[1], 7.0))
+	s.arrange.show_lane("t2", "volume")
+	var below := Vector2(s.arrange.x_of(1.0), s.arrange.lane_top(1) + s.arrange.lane_height + 1.0)
+	check("an automation row is not a clip lane", s.arrange.lane_at(below).get("id", "") == "t2" and s.paste_spot(below)[0] == "t1")
+	s.arrange.show_lane("t2", "volume", false)
+	host.paste_clips("", 1.0)
+	check("nowhere to paste is said", told.back().begins_with("Point at"))
+	host.paste_clips("gone", 1.0)
+	check("nor a track that has gone", told.back().contains("gone"))
+	# The real key at the real pointer. A headless window's pointer stays at its corner, whatever
+	# is pushed, so the studio is slid to put the lane there.
+	host.clear_selection()
+	s.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	s.position -= s.arrange.get_global_transform() * Vector2(s.arrange.x_of(8.0), s.arrange.lane_top(1) + 10.0)
+	await process_frame
+	check("the pointer is on the lane", s.arrange.row_at(s.arrange.get_local_mouse_position().y) == 1)
+	var had: int = p.track("t2").clips.size()
+	root.push_input(_chord(KEY_V, true))
+	await process_frame
+	check("Ctrl+V pastes where the pointer is", p.track("t2").clips.size() == had + 1)
+	var clips: int = p.track("t2").clips.size()
+	s.open_clip("t2", 0)
+	check("with a clip's notes open, Ctrl+V is still taken", s._key(_chord(KEY_V, true)))
+	check("and pastes nothing into what is out of view", p.track("t2").clips.size() == clips)
+	s.free()
+
+
+func _test_a_paste_is_one_undo() -> void:
+	var host := DawKitProjectHost.new(_band())
+	host.select_clip("t1", 0, false)
+	host.select_clip("t3", 0, true)
+	host.copy_clips()
+	var steps: int = host._undo.size()
+	var dirty := host.is_dirty()
+	check("a copy leaves the project clean", dirty == false)
+	host.paste_clips("t1", 10.0)
+	check("a paste of two is one step", host._undo.size() == steps + 1 and host.undo_name() == "paste")
+	host.undo()
+	check("one undo takes both back", host.project().track("t1").clips.size() == 1 and host.project().track("t3").clips.size() == 1)
+	host.redo()
+	check("one redo puts both back", host.project().track("t1").clips.size() == 2 and host.project().track("t3").clips.size() == 2)
+	host.undo()
+	host.select_clip("t1", 0, false)
+	host.select_clip("t3", 0, true)
+	steps = host._undo.size()
+	host.cut_clips()
+	check("a cut of two is one step", host._undo.size() == steps + 1 and host.undo_name() == "cut")
+	host.undo()
+	check("one undo brings both back", host.project().track("t1").clips.size() == 1 and host.project().track("t3").clips.size() == 1)
+	host.paste_clips("t1", 30.0)
+	check("the clipboard outlives an undo", host.project().track("t1").clips.size() == 2)
+
+
+func _test_paste_past_the_last_track_refuses() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var told: Array[String] = []
+	host.said.connect(func(text: String): told.append(text))
+	host.paste_clips("t1", 1.0)
+	check("an empty clipboard pastes nothing, and says so", told.back().begins_with("Nothing copied") and host._undo.is_empty())
+	host.select_clip("t1", 0, false)
+	host.select_clip("t3", 0, true)
+	host.copy_clips()
+	var steps: int = host._undo.size()
+	host.paste_clips("t2", 10.0)
+	check("a paste past the last track is refused whole", host.project().track("t2").clips.is_empty()
+			and host.project().track("t3").clips.size() == 1)
+	check("is no step", host._undo.size() == steps)
+	check("and says why", told.back().begins_with("Nothing pasted"))
+	host.paste_clips("t1", 10.0)
+	check("from high enough it fits", host.project().track("t3").clips.size() == 2)
+
+
+func _test_ctrl_shift_a_clears() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	check("Ctrl+A is a key", s._key(_chord(KEY_A, true)))
+	check("and selects every clip", host.selection().size() == 2)
+	check("Ctrl+Shift+A is a key", s._key(_chord(KEY_A, true, true)))
+	check("and selects none", host.selection().is_empty())
+	check("Alt+Ctrl+A is not a key", not s._key(_chord(KEY_A, true, false, true)))
+	var named := ""
+	for row in DawKitStudio.KEY_LIST:
+		named += row[0] + "\n"
+	check("the key list has the new keys", named.contains("Ctrl+X") and named.contains("Ctrl+C") and named.contains("Ctrl+V")
+			and named.contains("Ctrl+Shift+A"))
+	s.free()
+
+
+func _test_select_all_works_on_a_minimal_host() -> void:
+	var host := OnlySelects.new(_band())
+	var s := _studio(host)
+	check("Ctrl+A selects all on a host with only select_clip", s._key(_chord(KEY_A, true))
+			and host.is_selected("t1", 0) and host.is_selected("t3", 0))
+	var clips: int = host.project().track("t1").clips.size()
+	check("Ctrl+C on a host with no clipboard is harmless", s._key(_chord(KEY_C, true)))
+	check("Ctrl+X too", s._key(_chord(KEY_X, true)) and host.project().track("t1").clips.size() == clips)
+	check("Ctrl+V too", s._key(_chord(KEY_V, true)) and host.project().track("t1").clips.size() == clips)
+	s.free()
+
+
+func _test_keys_return_after_a_typed_tempo() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var line := s.transport.tempo.get_line_edit()
+	line.grab_focus()
+	line.edit()
+	check("a tempo being typed is typing", s._typing())
+	s._unhandled_key_input(_chord(KEY_SPACE))
+	check("so Space does not play", not host.is_playing())
+	line.text = "133"
+	var enter := _chord(KEY_ENTER)
+	enter.physical_keycode = KEY_ENTER
+	root.push_input(enter)
+	await process_frame
+	check("Enter sets the tempo", is_equal_approx(host.project().tempo, 133.0))
+	check("and gives the keys back", not line.has_focus() and not s._typing())
+	s._unhandled_key_input(_chord(KEY_SPACE))
+	check("Space plays after a typed tempo", host.is_playing())
+	host.stop()
+	var after := LineEdit.new()
+	s.add_child(after)
+	after.grab_focus()
+	after.edit()
+	check("any LineEdit being typed in has the keys", s._typing())
+	after.unedit()
+	check("and not once it is done, though it has the focus", after.has_focus() and not s._typing())
+	after.free()
+	var notes := TextEdit.new()
+	s.add_child(notes)
+	notes.grab_focus()
+	check("a TextEdit has the keys while focused", s._typing())
+	s._unhandled_key_input(_chord(KEY_SPACE))
+	check("so Space does not play there", not host.is_playing())
+	notes.free()
+	var header: Control = s.arrange.headers["t1"]
+	header.start_rename()
+	check("a track being renamed has the keys", s._typing())
+	header.finish_rename("")
+	s.free()
+
+
+func _test_a_hidden_piano_roll_takes_no_keys() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var riff: DawKitClip = host.project().track("t3").clips[0]
+	var notes := riff.note_count()
+	host.select_clip("t3", 0, false)
+	s.open_clip("t3", 0)
+	var pr := s.piano_roll
+	pr.selected = 0
+	s.show_view(DawKitStudio.View.MIXER)
+	check("the mixer can hide an open piano roll", pr.is_open() and not pr.is_visible_in_tree())
+	s._key(_chord(KEY_DELETE))
+	check("Delete leaves its hidden notes", riff.note_count() == notes)
+	check("and the hidden clip", host.project().track("t3").clips.size() == 1)
+	s._key(_chord(KEY_UP))
+	check("the arrows leave them too", int(riff.notes[2]) == 60)
+	s._key(_chord(KEY_Q))
+	check("and Q", host.undo_name() != "quantize")
+	s.show_view(DawKitStudio.View.ARRANGE)
+	check("back in view it is open again", pr.is_visible_in_tree())
+	var clips := host.project().track("t3").clips.size()
+	host.seek(0.5)
+	s._key(_chord(KEY_S))
+	s._key(_chord(KEY_D, true))
+	check("S and Ctrl+D leave the clips behind the piano roll", host.project().track("t3").clips.size() == clips)
+	var picked := host.selection().size() if host.has_method("selection") else -1
+	s._key(_chord(KEY_A, true))
+	check("Ctrl+A picks nothing behind it", picked == -1 or host.selection().size() == picked)
+	s._key(_chord(KEY_UP, false, true))
+	check("Shift+Up is the octave", int(riff.notes[2]) == 72)
+	s._key(_chord(KEY_UP, true))
+	check("Ctrl+Up is nothing", int(riff.notes[2]) == 72)
+	s._key(_chord(KEY_DELETE, false, true))
+	check("Shift+Delete deletes no note", riff.note_count() == notes)
+	s._key(_chord(KEY_DELETE))
+	check("Delete deletes the picked note in view", riff.note_count() == notes - 1)
+	pr._drag = {"kind": "move"}
+	s._key(_chord(KEY_ESCAPE, false, false, true))
+	check("Alt+Esc still lets go of a drag", pr._drag.is_empty() and pr.is_open())
+	s._key(_chord(KEY_ESCAPE, true))
+	check("but does not close the piano roll", pr.is_open())
+	s._key(_chord(KEY_ESCAPE))
+	check("Esc does", not pr.is_open())
+	s.free()
+
+
+func _button(at: Vector2, pressed: bool, ctrl := false, which := MOUSE_BUTTON_LEFT) -> InputEventMouseButton:
+	var e := InputEventMouseButton.new()
+	e.button_index = which
+	e.pressed = pressed
+	e.position = at
+	e.ctrl_pressed = ctrl
+	return e
+
+
+func _motion(at: Vector2) -> InputEventMouseMotion:
+	var e := InputEventMouseMotion.new()
+	e.position = at
+	return e
+
+
+func _test_esc_cancels_an_arrange_drag() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var loop: DawKitClip = host.project().track("t1").clips[0]
+	var steps: int = host._undo.size()
+	var from := Vector2(a.x_of(4.0), a.lane_top(0) + 30.0)
+	a._gui_input(_button(from, true))
+	a._gui_input(_motion(from + Vector2(100, 0)))
+	check("a clip is in hand", a.in_gesture() and host.is_selected("t1", 0))
+	check("Esc is a key mid-drag", s._key(_chord(KEY_ESCAPE)))
+	check("Esc lets go of the clip", not a.in_gesture())
+	check("and keeps the selection", host.is_selected("t1", 0))
+	a._gui_input(_button(from + Vector2(100, 0), false))
+	check("the release moves nothing", is_equal_approx(loop.start, 2.0) and host._undo.size() == steps)
+	a._gui_input(_button(from, true))
+	a._gui_input(_motion(from + Vector2(100, 0)))
+	s._key(_chord(KEY_ESCAPE, false, false, true))
+	check("Alt+Esc lets go of a drag held free", not a.in_gesture() and host.is_selected("t1", 0))
+	a._gui_input(_button(from + Vector2(100, 0), false))
+	var empty := Vector2(a.x_of(12.0), a.lane_top(1) + 20.0)
+	a._gui_input(_button(empty, true, true))
+	a._gui_input(_motion(empty + Vector2(40, 10)))
+	s._key(_chord(KEY_ESCAPE))
+	a._gui_input(_button(empty + Vector2(40, 10), false))
+	check("a box is cancelled too, the selection kept", a._box.is_empty() and host.is_selected("t1", 0))
+	a.show_lane("t2", "volume")
+	var lane := Vector2(a.x_of(3.0), a.lane_top(1) + a.lane_height + 20.0)
+	a._gui_input(_button(lane, true))
+	check("a point is in hand", not a._auto.is_empty())
+	s._key(_chord(KEY_ESCAPE))
+	a._gui_input(_button(lane, false))
+	var t2 := host.project().track("t2")
+	check("and a new point is not left behind", t2.automation_of("volume") == null or t2.automation_of("volume").points.is_empty())
+	check("no drag: Alt+Esc is nothing", not s._key(_chord(KEY_ESCAPE, false, false, true)) and host.is_selected("t1", 0))
+	s._key(_chord(KEY_ESCAPE))
+	check("with no drag Esc clears the selection", host.selection().is_empty())
+	s.free()
+
+
+## Every key that shifts clip indices waits for the drag, whose release names its clip by index.
+func _test_clip_keys_wait_for_an_arrange_drag() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var track := host.project().track("t1")
+	track.clips.clear()
+	for at: float in [1.0, 5.0, 9.0]:
+		var c := DawKitClip.new()
+		c.start = at
+		c.length = 2.0
+		c.notes = PackedFloat64Array([0.0, 0.5, 60, 100, 0])
+		track.clips.append(c)
+	var second: DawKitClip = track.clips[1]
+	var third: DawKitClip = track.clips[2]
+	var from := Vector2(a.x_of(5.5), a.lane_top(0) + 30.0)
+	a._gui_input(_button(from, true))
+	a._gui_input(_motion(from + Vector2(100, 0)))
+	check("the second clip is in hand", a.in_gesture() and host.is_selected("t1", 1))
+	var steps: int = host._undo.size()
+	for chord: Array in [[KEY_X, true, false], [KEY_V, true, false], [KEY_D, true, false], [KEY_DELETE, false, false],
+			[KEY_BACKSPACE, false, false], [KEY_S, false, false], [KEY_Z, true, false], [KEY_Z, true, true], [KEY_Y, true, false]]:
+		check("%s is still a key" % OS.get_keycode_string(chord[0]), s._key(_chord(chord[0], chord[1], chord[2])))
+		check("and changes nothing mid-drag", track.clips.size() == 3 and host._undo.size() == steps)
+	a._gui_input(_button(from + Vector2(100, 0), false))
+	check("the release moved the clip that was held", not is_equal_approx(second.start, 5.0))
+	check("and left its neighbour", is_equal_approx(third.start, 9.0))
+	# A clip gone by another road (a host's own write) drops the drag.
+	var moved := second.start
+	var grab := Vector2(a.x_of(moved + 0.5), a.lane_top(0) + 30.0)
+	a._gui_input(_button(grab, true))
+	a._gui_input(_motion(grab + Vector2(60, 0)))
+	var held_index: int = a._drag["index"]
+	track.clips.remove_at(held_index)
+	var left: Array = track.clips.map(func(c: DawKitClip) -> float: return c.start)
+	a._gui_input(_button(grab + Vector2(60, 0), false))
+	check("a release after its clip went moves nothing", track.clips.map(func(c: DawKitClip) -> float: return c.start) == left)
+	s.free()
+
+
+func _test_a_missed_ctrl_click_keeps_the_selection() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	host.select_clip("t1", 0, false)
+	var empty := Vector2(a.x_of(12.0), a.lane_top(1) + 20.0)
+	a._gui_input(_button(empty, true, true))
+	a._gui_input(_button(empty, false, true))
+	check("a Ctrl-click on nothing keeps the selection", host.is_selected("t1", 0))
+	check("and still moves the playhead", is_equal_approx(host.position(), a._seek_time(empty.x, false)))
+	_mouse(a, empty, empty, true)
+	check("a Shift-click too", host.is_selected("t1", 0))
+	_mouse(a, empty, empty)
+	check("a plain click on nothing clears it", host.selection().is_empty())
+	s.free()
+
+
+func _test_the_empty_menu_pastes() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	# Laid out, as a paste only takes a lane inside the arrangement.
+	await process_frame
+	await process_frame
+	var a := s.arrange
+	a.set_view(0.0, 50.0)
+	var p := host.project()
+	var at := Vector2(a.x_of(8.0), a.lane_top(1) + 20.0)
+	a._gui_input(_button(Vector2(a.x_of(4.0), a.lane_top(0) + 30.0), true, false, MOUSE_BUTTON_RIGHT))
+	check("a clip's menu has Cut and Copy", a._menu.get_item_index(DawKitArrange.MENU_CUT) >= 0
+			and a._menu.get_item_index(DawKitArrange.MENU_COPY) >= 0)
+	a._menu.hide()
+	a._on_menu(DawKitArrange.MENU_COPY)
+	check("its Copy copies the clip it was opened on", host._clipboard.size() == 1 and p.track("t1").clips.size() == 1)
+	a._gui_input(_button(at, true, false, MOUSE_BUTTON_RIGHT))
+	check("off every clip the right button opens the empty menu", a._empty_menu != null and a._empty_menu.visible
+			and a._empty_menu.item_count == 2)
+	a._empty_menu.hide()
+	a._on_empty_menu(DawKitArrange.EMPTY_PASTE)
+	check("its Paste lands on the lane that was clicked", p.track("t2").clips.size() == 1)
+	check("at the time that was clicked", is_equal_approx(p.track("t2").clips[0].start, a.magnet(a.time_at(at.x))))
+	a._on_empty_menu(DawKitArrange.EMPTY_SELECT_ALL)
+	check("its Select all selects every clip", host.selection().size() == 3)
+	var cut_from: int = p.track("t2").clips.size()
+	host.select_clip("t2", 0, false)
+	a.open_clip_menu("t2", 0, Vector2(100, 100))
+	a._menu.hide()
+	a._on_menu(DawKitArrange.MENU_CUT)
+	check("a clip's Cut takes it", p.track("t2").clips.size() == cut_from - 1)
+	a._gui_input(_button(at, true))
+	a._empty_menu.hide()
+	a._gui_input(_button(at + Vector2(30, 0), true, false, MOUSE_BUTTON_RIGHT))
+	check("no menu opens over a drag", not a._empty_menu.visible)
+	a.cancel_gesture()
+	s.free()
+
+
+## Counts the gestures a piano roll opens and closes.
+class CountsGestures extends DawKitProjectHost:
+	var begun := 0
+	var ended := 0
+
+	func begin_gesture(_name: String) -> void:
+		begun += 1
+
+	func end_gesture() -> void:
+		ended += 1
+
+
+func _test_two_velocity_drags_are_two_steps() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var at := []
+	for t in host.project().tracks:
+		for i in t.clips.size():
+			if at.is_empty() and t.clips[i].notes.size() > 0:
+				at = [t.id, i]
+	check("the band has a clip with notes", not at.is_empty())
+	if at.is_empty():
+		return
+	var clip: DawKitClip = host.project().track(at[0]).clips[at[1]]
+	var was := int(clip.notes[3])
+	var steps: int = host._undo.size()
+	for level: int in [40, 50]:
+		host.begin_gesture("velocity")
+		host.set_note_velocity(at[0], at[1], 0, level)
+		host.set_note_velocity(at[0], at[1], 0, level + 5)
+		host.end_gesture()
+	check("two drags, two steps", host._undo.size() == steps + 2)
+	host.undo()
+	clip = host.project().track(at[0]).clips[at[1]]
+	check("one undo goes back to the first drag's end", int(clip.notes[3]) == 45)
+	host.undo()
+	clip = host.project().track(at[0]).clips[at[1]]
+	check("the next to where it started", int(clip.notes[3]) == was)
+
+
+func _test_the_mixer_view_keeps_clip_keys_off() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	var clips: int = host.project().track("t3").clips.size()
+	host.select_clip("t3", 0, false)
+	host.seek(0.5)
+	s.show_view(DawKitStudio.View.MIXER)
+	s._key(_chord(KEY_DELETE))
+	s._key(_chord(KEY_S))
+	s._key(_chord(KEY_D, true))
+	s._key(_chord(KEY_X, true))
+	check("nothing unseen is edited in the mixer", host.project().track("t3").clips.size() == clips)
+	s.show_view(DawKitStudio.View.BOTH)
+	s._key(_chord(KEY_S))
+	check("and the keys are back with the clips", host.project().track("t3").clips.size() == clips + 1)
+
+
+func _test_the_file_menu_disables_save_itself() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	s.transport._fill_file_menu()
+	var menu := s.transport.file_menu.get_popup()
+	var save := menu.get_item_index(DawKitTransportBar.FILE_SAVE)
+	check("the id FILE_SAVE is the Save item (%s)" % menu.get_item_text(save), menu.get_item_text(save).begins_with("Save  "))
+	check("Open recent has its own id", menu.get_item_index(DawKitTransportBar.FILE_RECENT_MENU) != save)
+
+
+func _test_a_velocity_drag_is_one_gesture() -> void:
+	var host := CountsGestures.new(_band())
+	var s := _studio(host)
+	s.open_clip("t3", 0)
+	var pr := s.piano_roll
+	pr.size = Vector2(1000, 600)
+	pr.view_start = 0.0
+	pr.pixels_per_second = 200.0
+	var riff: DawKitClip = host.project().track("t3").clips[0]
+	var bar := Vector2(pr.x_of(0.5), pr.notes_bottom() + 20.0)
+	var steps: int = host._undo.size()
+	pr._gui_input(_button(bar, true))
+	for y in [24.0, 34.0, 44.0, 60.0]:
+		pr._gui_input(_motion(Vector2(bar.x, pr.notes_bottom() + y)))
+	check("the drag opens one gesture and holds it", host.begun == 1 and host.ended == 0)
+	pr._gui_input(_button(bar, false))
+	check("and closes it on release", host.begun == 1 and host.ended == 1)
+	check("it changed the note", int(riff.notes[DawKitClip.NOTE_WIDTH + 3]) != 90)
+	check("in one step of undo", host._undo.size() == steps + 1 and host.undo_name() == "velocity")
+	host.undo()
+	check("one undo takes it all back", int(host.project().track("t3").clips[0].notes[DawKitClip.NOTE_WIDTH + 3]) == 90)
+	pr.refresh()
+	pr._gui_input(_button(bar, true))
+	s._key(_chord(KEY_ESCAPE, false, false, true))
+	check("Esc mid-drag closes its gesture", host.begun == 2 and host.ended == 2 and pr._drag.is_empty())
+	pr._gui_input(_button(bar, true))
+	s.show_view(DawKitStudio.View.MIXER)
+	check("hiding it mid-drag closes its gesture", host.begun == 3 and host.ended == 3 and pr._drag.is_empty())
+	s.show_view(DawKitStudio.View.ARRANGE)
+	pr._gui_input(_button(bar, true))
+	pr._gui_input(_button(bar, true))
+	check("a lost release is closed by the next press", host.begun == 5 and host.ended == 4)
+	pr.close()
+	check("closing the roll mid-drag closes its gesture", host.begun == 5 and host.ended == 5)
+	s.free()
+
+
+func _test_delete_after_undo_keeps_the_right_note() -> void:
+	var host := DawKitProjectHost.new(_band())
+	var s := _studio(host)
+	s.open_clip("t3", 0)
+	var pr := s.piano_roll
+	host.insert_note("t3", 0, 0.25, 0.4, 72)
+	s.refresh()
+	check("a note went in between the two", int(pr.clip().notes[DawKitClip.NOTE_WIDTH + 2]) == 72)
+	pr.selected = 2
+	check("the last note is picked", int(pr.clip().notes[2 * DawKitClip.NOTE_WIDTH + 2]) == 64)
+	host.undo()
+	s.refresh()
+	check("after the undo it is still that note, at its new place", pr.selected == 1)
+	s._key(_chord(KEY_DELETE))
+	var left: DawKitClip = pr.clip()
+	check("Delete takes that note", left.note_count() == 1 and int(left.notes[2]) == 60)
+	host.undo()
+	s.refresh()
+	pr.selected = 0
+	host.insert_note("t3", 0, 0.0, 0.1, 50)
+	host.undo()
+	host.delete_note("t3", 0, 0)
+	s._key(_chord(KEY_DELETE))
+	check("a picked note that has gone deletes nothing else", pr.clip().note_count() == 1 and int(pr.clip().notes[2]) == 64)
+	host.undo()
+	s.refresh()
+	# Two notes on one spot: the pick stays on the one it was.
+	host.insert_note("t3", 0, 0.5, 0.9, 64)
+	s.refresh()
+	var c := pr.clip()
+	var first := -1
+	for n in c.note_count():
+		if int(c.notes[n * DawKitClip.NOTE_WIDTH + 2]) == 64:
+			first = n
+			break
+	pr.selected = first
+	pr.refresh()
+	check("of two notes on one spot the pick stays put", pr.selected == first)
+	pr.selected = 0
+	var pitch := int(pr.clip().notes[2])
+	s._key(_chord(KEY_Q))
+	check("a quantize keeps the pick", pr.selected >= 0 and int(pr.clip().notes[pr.selected * DawKitClip.NOTE_WIDTH + 2]) == pitch)
+	s.free()

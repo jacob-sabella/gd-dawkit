@@ -462,6 +462,43 @@ func duplicate_selection() -> void:
 	pass
 
 
+## Every clip selected. One select_clip a clip unless a host has a better way.
+func select_all_clips() -> void:
+	var p := project()
+	if p == null:
+		return
+	var first := true
+	for t in p.tracks:
+		for i in t.clips.size():
+			select_clip(t.id, i, not first)
+			first = false
+
+
+## The selected clips onto this player's clipboard, as they stand to each other in time and track.
+func copy_clips() -> void:
+	pass
+
+
+## The selected clips onto the clipboard and out of the project. A locked clip stays.
+func cut_clips() -> void:
+	pass
+
+
+## The clipboard put back with its top track at `track_id` and its earliest clip at `seconds`, the
+## new clips selected. An empty `track_id` is a paste with nowhere to go, for the host to say so.
+func paste_clips(_track_id: String, _seconds: float) -> void:
+	pass
+
+
+## The edits until end_gesture are one step of undo, called `_name`.
+func begin_gesture(_name: String) -> void:
+	pass
+
+
+func end_gesture() -> void:
+	pass
+
+
 ## A clip's edges moved to `start` and `end` (song seconds), its sound or notes left where they
 ## sound: trimming the front of a clip does not slide what it plays.
 func trim_clip(_id: String, _clip_index: int, _start: float, _end: float) -> void:
