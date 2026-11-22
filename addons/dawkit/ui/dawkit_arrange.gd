@@ -18,6 +18,8 @@ extends Control
 signal hovered(text: String)
 ## A MIDI clip double-clicked, to have its notes edited.
 signal clip_opened(id: String, index: int)
+## Paste asked for from the empty-area menu, for a right-click at `at` (this control's pixels).
+signal paste_asked(at: Vector2)
 
 ## The ruler (DawKitRuler.HEIGHT): markers and regions, the tempo's changes, and the bars.
 const RULER_HEIGHT := 56.0
@@ -51,7 +53,8 @@ const GRIDS: Array[float] = [BAR, 1.0, 0.5, 0.25, 0.125, 0.0625, OFF]
 const GRID_NAMES: Array[String] = ["BAR", "BEAT", "1/2 BEAT", "1/4 BEAT", "1/8 BEAT", "1/16 BEAT", "NO GRID"]
 const CURSORS := {"trim_left": Control.CURSOR_HSIZE, "trim_right": Control.CURSOR_HSIZE,
 		"fade_in": Control.CURSOR_POINTING_HAND, "fade_out": Control.CURSOR_POINTING_HAND, "gain": Control.CURSOR_VSIZE}
-enum { MENU_SPLIT, MENU_DUPLICATE, MENU_DELETE, MENU_MUTE, MENU_GAIN, MENU_FADES }
+enum { MENU_SPLIT, MENU_DUPLICATE, MENU_DELETE, MENU_MUTE, MENU_GAIN, MENU_FADES, MENU_CUT, MENU_COPY }
+enum { EMPTY_PASTE, EMPTY_SELECT_ALL }
 enum { TRACK_NEW, TRACK_DUPLICATE, TRACK_RENAME, TRACK_INTO, TRACK_OUT, TRACK_DELETE }
 ## The colours a track can be given from its menu.
 const PALETTE: Array[Color] = [Color(0.86, 0.3, 0.3), Color(0.93, 0.55, 0.25), Color(0.9, 0.78, 0.3),
@@ -91,6 +94,7 @@ var _drag: Dictionary = {}
 var _box: Dictionary = {}
 var ruler: DawKitRuler
 var _menu: PopupMenu
+var _empty_menu: PopupMenu
 var _track_menu: PopupMenu
 var _colours: PopupMenu
 var _add_button: Button
@@ -465,6 +469,8 @@ func _on_button(e: InputEventMouseButton) -> void:
 			if host.can(DawKitHost.SELECT) and not host.is_selected(hit["id"], hit["index"]):
 				host.select_clip(hit["id"], hit["index"])
 			open_clip_menu(hit["id"], hit["index"], e.global_position)
+		elif e.position.y >= RULER_HEIGHT and not in_gesture():
+			open_empty_menu(e.position, e.global_position)
 		accept_event()
 		return
 	if e.button_index != MOUSE_BUTTON_LEFT:
@@ -546,7 +552,8 @@ func _release(e: InputEventMouseButton) -> void:
 		queue_redraw()
 		var from: Vector2 = box["from"]
 		if from.distance_to(e.position) < 4.0:
-			if host.can(DawKitHost.SELECT):
+			# A Ctrl or Shift click that missed its clip is not asking to lose the others.
+			if host.can(DawKitHost.SELECT) and not box["additive"]:
 				host.clear_selection()
 			if host.can(DawKitHost.SEEK):
 				host.seek(_seek_time(e.position.x, e.alt_pressed))
@@ -560,6 +567,10 @@ func _release(e: InputEventMouseButton) -> void:
 	queue_redraw()
 	var c: DawKitClip = d["clip"]
 	var g: DawKitClip = d["ghost"]
+	# The index was taken at the press: if another clip is there now, this release is not for it.
+	if not _still_at(d["id"], d["index"], c):
+		host.said.emit("That clip changed while you held it, so the drag was dropped.")
+		return
 	match d["zone"]:
 		"move":
 			if not is_equal_approx(g.start, c.start) or d["to"] != d["id"]:
@@ -573,6 +584,31 @@ func _release(e: InputEventMouseButton) -> void:
 		"gain":
 			if not is_equal_approx(g.gain_db, c.gain_db):
 				host.set_clip_gain(d["id"], d["index"], g.gain_db)
+
+
+## Whether `index` on the track `id` still holds `c`: the same clip, or a rebuilt copy of it.
+func _still_at(id: String, index: int, c: DawKitClip) -> bool:
+	var t := host.project().track(id) if host.project() != null else null
+	if t == null or index >= t.clips.size():
+		return false
+	var now: DawKitClip = t.clips[index]
+	return now == c or (is_equal_approx(now.start, c.start) and is_equal_approx(now.length, c.length))
+
+
+## Whether a clip, a box or an automation point is being dragged.
+func in_gesture() -> bool:
+	return not (_drag.is_empty() and _box.is_empty() and _auto.is_empty())
+
+
+## Lets go of a drag with nothing done, the selection as it was. Says whether there was one.
+func cancel_gesture() -> bool:
+	if not in_gesture():
+		return false
+	_drag = {}
+	_box = {}
+	_auto = {}
+	queue_redraw()
+	return true
 
 
 ## Selects every clip that a rectangle (in this control's pixels) touches, as well as what was
@@ -611,6 +647,8 @@ func open_clip_menu(id: String, index: int, at: Vector2) -> void:
 	_menu.clear()
 	var editing := host.can(DawKitHost.EDIT_CLIPS)
 	_menu.add_item("Split at the playhead  (S)", MENU_SPLIT)
+	_menu.add_item("Cut  (Ctrl+X)", MENU_CUT)
+	_menu.add_item("Copy  (Ctrl+C)", MENU_COPY)
 	_menu.add_item("Duplicate  (Ctrl+D)", MENU_DUPLICATE)
 	_menu.add_item("Delete  (Del)", MENU_DELETE)
 	_menu.add_separator()
@@ -635,6 +673,10 @@ func _on_menu(item: int) -> void:
 	match item:
 		MENU_SPLIT:
 			host.split_selection(host.position())
+		MENU_CUT:
+			host.cut_clips()
+		MENU_COPY:
+			host.copy_clips()
 		MENU_DUPLICATE:
 			host.duplicate_selection()
 		MENU_DELETE:
@@ -645,6 +687,32 @@ func _on_menu(item: int) -> void:
 			host.set_clip_gain(at[0], at[1], 0.0)
 		MENU_FADES:
 			host.set_clip_fades(at[0], at[1], 0.0, 0.0)
+
+
+## The right button's menu off every clip; `at` is in this control's pixels, `screen` where it opens.
+func open_empty_menu(at: Vector2, screen: Vector2) -> void:
+	if _empty_menu == null:
+		_empty_menu = PopupMenu.new()
+		_empty_menu.name = "EmptyMenu"
+		add_child(_empty_menu)
+		_empty_menu.id_pressed.connect(_on_empty_menu)
+	_empty_menu.clear()
+	_empty_menu.add_item("Paste  (Ctrl+V)", EMPTY_PASTE)
+	_empty_menu.add_item("Select all  (Ctrl+A)", EMPTY_SELECT_ALL)
+	_empty_menu.set_item_disabled(0, not host.can(DawKitHost.EDIT_CLIPS))
+	_empty_menu.set_item_disabled(1, not host.can(DawKitHost.SELECT))
+	_empty_menu.set_meta(&"at", at)
+	_empty_menu.position = Vector2i(screen)
+	_empty_menu.reset_size()
+	_empty_menu.popup()
+
+
+func _on_empty_menu(item: int) -> void:
+	match item:
+		EMPTY_PASTE:
+			paste_asked.emit(_empty_menu.get_meta(&"at"))
+		EMPTY_SELECT_ALL:
+			host.select_all_clips()
 
 
 ## The row a track dropped at `y` lands before (0 to the number of rows).

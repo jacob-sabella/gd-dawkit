@@ -31,7 +31,7 @@ var title_label: Label
 
 
 ## What the FILE menu holds. A recent file is FILE_RECENT plus its place in host.recent_files().
-enum { FILE_NEW, FILE_OPEN, FILE_SAVE, FILE_SAVE_AS, FILE_RENDER, FILE_RENDER_STEMS, FILE_RECENT = 100 }
+enum { FILE_NEW, FILE_OPEN, FILE_SAVE, FILE_SAVE_AS, FILE_RENDER, FILE_RENDER_STEMS, FILE_RECENT_MENU = 99, FILE_RECENT = 100 }
 
 ## An item of the FILE menu picked: one of FILE_*.
 signal file_asked(item: int)
@@ -121,6 +121,8 @@ func _init(with_host: DawKitHost) -> void:
 	tempo.custom_minimum_size = Vector2(84, 0)
 	tempo.editable = host.can(DawKitHost.TEMPO)
 	tempo.value_changed.connect(func(v: float): host.set_tempo(v))
+	# Enter is the end of typing a tempo: the keys go back to being the studio's.
+	tempo.get_line_edit().text_submitted.connect(func(_text: String): tempo.get_line_edit().release_focus())
 	row.add_child(tempo)
 
 	grid = OptionButton.new()
@@ -165,8 +167,10 @@ func _fill_file_menu() -> void:
 		child.queue_free()
 	menu.clear()
 	var files := host.can(DawKitHost.FILES)
-	menu.add_item("New project", FILE_NEW, KEY_MASK_CTRL | KEY_N)
-	menu.add_item("Open...", FILE_OPEN, KEY_MASK_CTRL | KEY_O)
+	# The keys are only named here. A real accelerator would answer before the studio could see
+	# that a text field has the keys, so the studio is the one thing that handles them.
+	menu.add_item("New project  (Ctrl+N)", FILE_NEW)
+	menu.add_item("Open...  (Ctrl+O)", FILE_OPEN)
 	var recent := PopupMenu.new()
 	recent.name = "Recent"
 	var paths := host.recent_files()
@@ -175,11 +179,11 @@ func _fill_file_menu() -> void:
 		recent.set_item_tooltip(i, paths[i])
 	recent.id_pressed.connect(func(item: int): file_asked.emit(item))
 	menu.add_child(recent)
-	menu.add_submenu_node_item("Open recent", recent)
+	menu.add_submenu_node_item("Open recent", recent, FILE_RECENT_MENU)
 	menu.set_item_disabled(menu.item_count - 1, paths.is_empty() or not files)
 	menu.add_separator()
-	menu.add_item("Save", FILE_SAVE, KEY_MASK_CTRL | KEY_S)
-	menu.add_item("Save as...", FILE_SAVE_AS, KEY_MASK_CTRL | KEY_MASK_SHIFT | KEY_S)
+	menu.add_item("Save  (Ctrl+S)", FILE_SAVE)
+	menu.add_item("Save as...  (Ctrl+Shift+S)", FILE_SAVE_AS)
 	menu.add_separator()
 	menu.add_item("Render the mix", FILE_RENDER)
 	menu.add_item("Render a file a track", FILE_RENDER_STEMS)

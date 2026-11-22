@@ -67,6 +67,7 @@ func _init(with_host: DawKitHost) -> void:
 	wet.min_value = 0.0
 	wet.max_value = 1.0
 	wet.step = 0.0
+	wet.focus_mode = Control.FOCUS_NONE
 	wet.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	wet.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	wet.value_changed.connect(func(v: float): host.set_effect_wet(id, index, v))
@@ -163,6 +164,7 @@ func _control_row(param: int, label: String, editable: bool) -> Control:
 	slider.min_value = 0.0
 	slider.max_value = 1.0
 	slider.step = 0.0
+	slider.focus_mode = Control.FOCUS_NONE
 	slider.editable = editable
 	slider.value_changed.connect(func(v: float): host.set_effect_value(id, index, param, v))
 	row.add_child(slider)
